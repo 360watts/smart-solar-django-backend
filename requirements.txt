@@ -1,0 +1,5 @@
+django>=4.2
+djangorestframework>=3.12
+pytest
+pytest-django
+paho-mqtt>=1.6.1

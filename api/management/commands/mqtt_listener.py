@@ -39,9 +39,19 @@ class Command(BaseCommand):
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"Invalid JSON on {msg.topic}: {e}"))
                 return
+            
+            # Extract deviceId and dataType from topic: devices/<deviceId>/telemetry/<dataType>
+            topic_parts = msg.topic.split('/')
+            if len(topic_parts) >= 4:
+                device_id = topic_parts[1]
+                data_type = topic_parts[3]
+                payload["deviceId"] = device_id  # Add deviceId from topic
+                payload["dataType"] = data_type  # Add dataType from topic
+            
             # Ensure timestamp
             if "timestamp" not in payload:
                 payload["timestamp"] = timezone.now().isoformat()
+            
             serializer = TelemetryIngestSerializer(data=payload)
             if serializer.is_valid():
                 telemetry = serializer.save()

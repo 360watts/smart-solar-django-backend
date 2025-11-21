@@ -1,0 +1,40 @@
+Start Django server
+Open a terminal in smart-solar-django-backend and run:
+python manage.py runserver 0.0.0.0:8000
+---
+Complete Local Running Procedures for Django + MQTT + ESP32
+
+1. Set up Python virtual environment (if not done):
+	python -m venv venv
+	.\venv\Scripts\Activate.ps1
+
+2. Install dependencies:
+	python -m pip install --upgrade pip
+	python -m pip install -r requirements.txt
+	python -m pip install paho-mqtt
+
+3. Apply Django migrations:
+	python manage.py migrate
+
+4. Start Django server (for API access):
+	python manage.py runserver 0.0.0.0:8000
+	# Use your PC's local IP and port 8000 for API requests from ESP32 or other devices.
+
+5. Install and run MQTT broker (Mosquitto) on your PC:
+	# Download from https://mosquitto.org/download/
+	mosquitto -p 1883
+	# Make sure firewall allows inbound connections on port 1883.
+
+6. Configure ESP32 firmware:
+	# Set MQTT broker address to your PC's local IP and port 1883.
+	# Ensure ESP32 and PC are on the same Wi-Fi network.
+
+7. Run Django MQTT listener:
+	python manage.py mqtt_listener
+	# This connects to the broker and processes MQTT messages from ESP32.
+
+---
+Summary:
+- Django HTTP server: 0.0.0.0:8000 (API)
+- MQTT broker: 0.0.0.0:1883 (Mosquitto)
+- ESP32 sends MQTT data to broker; Django processes via mqtt_listener.

@@ -1,9 +1,20 @@
 from django.db import models
 from django.utils import timezone
+from django.contrib.auth.models import User
+
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    mobile_number = models.CharField(max_length=15, blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.user.username}'s profile"
 
 
 class Device(models.Model):
 	device_serial = models.CharField(max_length=64, unique=True)
+	user = models.ForeignKey(User, related_name="devices", on_delete=models.CASCADE, default=5)
 	public_key_algorithm = models.CharField(max_length=32, blank=True, null=True)
 	csr_pem = models.TextField(blank=True, null=True)
 	provisioned_at = models.DateTimeField(default=timezone.now)
@@ -15,6 +26,7 @@ class Device(models.Model):
 
 class GatewayConfig(models.Model):
 	config_id = models.CharField(max_length=64, unique=True)
+	name = models.CharField(max_length=100, blank=True, default='')
 	updated_at = models.DateTimeField(default=timezone.now)
 	config_schema_ver = models.PositiveIntegerField(default=1)
 	baud_rate = models.PositiveIntegerField(default=9600)
@@ -23,7 +35,7 @@ class GatewayConfig(models.Model):
 	parity = models.PositiveSmallIntegerField(default=0)  # 0=None,1=Odd,2=Even
 
 	def __str__(self):
-		return self.config_id
+		return self.name or self.config_id
 
 
 class SlaveDevice(models.Model):

@@ -1,5 +1,9 @@
 django>=4.2
 djangorestframework>=3.12
+djangorestframework-simplejwt
+django-admin-interface
+django-colorfield
 pytest
 pytest-django
 paho-mqtt>=1.6.1
+django-cors-headers>=4.0

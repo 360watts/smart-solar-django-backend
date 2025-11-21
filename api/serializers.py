@@ -1,5 +1,26 @@
 from rest_framework import serializers
-from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData
+from django.contrib.auth.models import User
+from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile
+
+
+class DeviceSerializer(serializers.ModelSerializer):
+    user = serializers.CharField(source='user.username', read_only=True)
+
+    class Meta:
+        model = Device
+        fields = ['id', 'device_serial', 'user', 'provisioned_at', 'config_version']
+        read_only_fields = ['id', 'provisioned_at']
+
+    def create(self, validated_data):
+        # Handle user assignment if provided
+        user_username = validated_data.pop('user', None)
+        if user_username:
+            try:
+                user = User.objects.get(username=user_username)
+                validated_data['user'] = user
+            except User.DoesNotExist:
+                raise serializers.ValidationError({'user': 'User not found'})
+        return super().create(validated_data)
 
 
 class RegisterMappingSerializer(serializers.ModelSerializer):
@@ -88,6 +109,8 @@ class TelemetryIngestSerializer(serializers.Serializer):
 
 	def create(self, validated_data):
 		device, _ = Device.objects.get_or_create(device_serial=validated_data["deviceId"])
+		# Use dataType as registerLabel if not provided
+		register_label = validated_data.get("registerLabel") or validated_data["dataType"]
 		return TelemetryData.objects.create(
 			device=device,
 			timestamp=validated_data["timestamp"],
@@ -95,7 +118,7 @@ class TelemetryIngestSerializer(serializers.Serializer):
 			value=validated_data["value"],
 			unit=validated_data.get("unit"),
 			slave_id=validated_data.get("slaveId"),
-			register_label=validated_data.get("registerLabel"),
+			register_label=register_label,
 			quality=validated_data.get("quality", "good"),
 		)
 

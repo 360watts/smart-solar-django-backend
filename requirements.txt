@@ -7,3 +7,6 @@ pytest
 pytest-django
 paho-mqtt>=1.6.1
 django-cors-headers>=4.0
+django-extensions>=3.2
+pyOpenSSL>=23.0
+Werkzeug>=3.0

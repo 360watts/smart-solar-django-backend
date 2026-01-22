@@ -9,12 +9,5 @@ sys.path.insert(0, str(BASE_DIR))
 # Set the Django settings module
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'localapi.settings')
 
-# Import Django and setup
-import django
-django.setup()
-
-# Import the WSGI application
-from localapi.wsgi import application
-
-# Vercel expects the app to be named 'app'
-app = application
+# Note: django.setup() is called in api/index.py for serverless functions
+# Do not call setup here as it causes reentrant errors during app loading

@@ -1,19 +1,21 @@
 #!/usr/bin/env python
 import os
 import sys
+import subprocess
 from pathlib import Path
-
-# Add the project directory to the Python path
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR))
 
 # Set the Django settings module
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'localapi.settings')
 
-# Import Django and setup
-import django
-django.setup()
+# Run migrations using manage.py
+result = subprocess.run([
+    sys.executable, 'manage.py', 'migrate', '--run-syncdb'
+], cwd=Path(__file__).resolve().parent, capture_output=True, text=True)
 
-# Run migrations
-from django.core.management import execute_from_command_line
-execute_from_command_line(['manage.py', 'migrate', '--run-syncdb'])
+if result.returncode != 0:
+    print("Migration failed:")
+    print(result.stderr)
+    sys.exit(1)
+else:
+    print("Migrations completed successfully")
+    print(result.stdout)

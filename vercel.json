@@ -1,7 +1,7 @@
 {
   "version": 2,
   "buildCommand": "python build.py",
-  "installCommand": "uv pip install --system -r requirements.txt",
+  "installCommand": "uv pip install --system -r requirements.txt --target .vercel_python_packages",
   "outputDirectory": "staticfiles",
   "functions": {
     "api/index.py": {

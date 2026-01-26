@@ -22,12 +22,28 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-1^-iir7!mnx80ofg=%ebz%dhrer^@vor%zoy99oit*n2j)p!ts')
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,.vercel.app', cast=lambda v: [s.strip() for s in v.split(',')])
+def _clean_allowed_hosts(value: str) -> list[str]:
+    hosts: list[str] = []
+    for raw in value.split(','):
+        host = raw.strip()
+        if not host:
+            continue
+        if "://" in host:
+            host = host.split("://", 1)[1]
+        host = host.split("/", 1)[0]
+        hosts.append(host)
+    return hosts
+
+ALLOWED_HOSTS = config(
+    'ALLOWED_HOSTS',
+    default='localhost,127.0.0.1,.vercel.app',
+    cast=_clean_allowed_hosts,
+)
 
 
 # Application definition

@@ -19,3 +19,16 @@ if result.returncode != 0:
 else:
     print("Migrations completed successfully")
     print(result.stdout)
+
+# Collect static files so Vercel has a build output directory
+collectstatic = subprocess.run([
+    sys.executable, 'manage.py', 'collectstatic', '--noinput'
+], cwd=Path(__file__).resolve().parent, capture_output=True, text=True)
+
+if collectstatic.returncode != 0:
+    print("Collectstatic failed:")
+    print(collectstatic.stderr)
+    sys.exit(1)
+else:
+    print("Collectstatic completed successfully")
+    print(collectstatic.stdout)

@@ -1,7 +1,7 @@
 {
   "version": 2,
   "buildCommand": "python build.py",
-  "installCommand": "python -m pip install -r requirements.txt",
+  "installCommand": "uv pip install --system -r requirements.txt",
   "outputDirectory": "staticfiles",
   "functions": {
     "api/index.py": {

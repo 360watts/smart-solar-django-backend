@@ -116,7 +116,7 @@ if ACTIVE_DATABASE_URL:
             default=ACTIVE_DATABASE_URL,
             conn_max_age=0 if is_pooler else 600,
             ssl_require=True,
-            engine='django.db.backends.postgresql',
+            engine='django.db.backends.postgresql_psycopg2cffi',
         )
     }
     if is_pooler:
@@ -128,7 +128,7 @@ if ACTIVE_DATABASE_URL:
 else:
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
+            "ENGINE": "django.db.backends.postgresql_psycopg2cffi",
             "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
             "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
             "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),

@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 from decouple import config
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,12 +99,42 @@ WSGI_APPLICATION = "localapi.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+DATABASE_URL = config('DATABASE_URL', default='')
+DATABASE_URL_NON_POOLING = config('DATABASE_POSTGRES_URL_NON_POOLING', default='')
+DATABASE_URL_POOLING = config('DATABASE_POSTGRES_URL', default='')
+
+ACTIVE_DATABASE_URL = next(
+    (url for url in [DATABASE_URL, DATABASE_URL_NON_POOLING, DATABASE_URL_POOLING] if url),
+    ''
+)
+
+if ACTIVE_DATABASE_URL:
+    is_pooler = "pooler" in ACTIVE_DATABASE_URL or "pgbouncer" in ACTIVE_DATABASE_URL or ":6543" in ACTIVE_DATABASE_URL
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=ACTIVE_DATABASE_URL,
+            conn_max_age=0 if is_pooler else 600,
+            ssl_require=True,
+        )
     }
-}
+    if is_pooler:
+        # PgBouncer transaction pooling compatibility
+        DATABASES["default"]["OPTIONS"] = {
+            "sslmode": "require",
+            "DISABLE_SERVER_SIDE_CURSORS": True,
+        }
+else:
+    DATABASES = {
+        "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
+        "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
+        "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),
+        "HOST": config('DATABASE_POSTGRES_HOST', default='localhost'),
+        "PORT": config('DATABASE_POSTGRES_PORT', default='5432'),
+        "OPTIONS": {
+            "sslmode": "require",
+        },
 
 
 # Password validation

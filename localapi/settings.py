@@ -126,15 +126,17 @@ if ACTIVE_DATABASE_URL:
 else:
     DATABASES = {
         "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
-        "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
-        "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),
-        "HOST": config('DATABASE_POSTGRES_HOST', default='localhost'),
-        "PORT": config('DATABASE_POSTGRES_PORT', default='5432'),
-        "OPTIONS": {
-            "sslmode": "require",
-        },
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
+            "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
+            "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),
+            "HOST": config('DATABASE_POSTGRES_HOST', default='localhost'),
+            "PORT": config('DATABASE_POSTGRES_PORT', default='5432'),
+            "OPTIONS": {
+                "sslmode": "require",
+            },
+        }
+    }
 
 
 # Password validation

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "uv python build.py",
+  "buildCommand": "PYTHONPATH=.vercel_python_packages python build.py",
   "installCommand": "uv pip install --system -r requirements.txt --target .vercel_python_packages",
   "outputDirectory": "staticfiles",
   "functions": {
@@ -15,3 +15,5 @@
     }
   ]
 }
+
+

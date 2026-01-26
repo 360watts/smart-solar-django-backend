@@ -7,6 +7,13 @@ from pathlib import Path
 # Set the Django settings module
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'localapi.settings')
 
+# Install requirements if needed (for Vercel)
+try:
+    import psycopg2
+except ImportError:
+    print("Installing psycopg2-binary...")
+    subprocess.run([sys.executable, '-m', 'pip', 'install', 'psycopg2-binary'], check=True)
+
 # Run migrations using manage.py
 result = subprocess.run([
     sys.executable, 'manage.py', 'migrate', '--run-syncdb'

@@ -116,25 +116,29 @@ if ACTIVE_DATABASE_URL:
             default=ACTIVE_DATABASE_URL,
             conn_max_age=0 if is_pooler else 600,
             ssl_require=True,
-            engine='pg8000',
+            engine='django.db.backends.postgresql',
         )
     }
+    # Use pg8000 as the database driver
+    DATABASES["default"]["OPTIONS"] = {
+        "driver": "pg8000",
+    }
     if is_pooler:
-        # PgBouncer transaction pooling compatibility
-        DATABASES["default"]["OPTIONS"] = {
+        DATABASES["default"]["OPTIONS"].update({
             "sslmode": "require",
             "DISABLE_SERVER_SIDE_CURSORS": True,
-        }
+        })
 else:
     DATABASES = {
         "default": {
-            "ENGINE": "pg8000",
+            "ENGINE": "django.db.backends.postgresql",
             "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
             "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
             "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),
             "HOST": config('DATABASE_POSTGRES_HOST', default='localhost'),
             "PORT": config('DATABASE_POSTGRES_PORT', default='5432'),
             "OPTIONS": {
+                "driver": "pg8000",
                 "sslmode": "require",
             },
         }

@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "PYTHONPATH=.vercel_python_packages python build.py",
-  "installCommand": "uv pip install --system --only-binary :all: -r requirements.txt --target .vercel_python_packages",
+  "buildCommand": "python build.py",
+  "installCommand": "uv pip install --system --only-binary :all: -r requirements.txt",
   "outputDirectory": "staticfiles",
   "functions": {
     "api/index.py": {

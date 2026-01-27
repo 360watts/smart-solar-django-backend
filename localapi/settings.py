@@ -120,10 +120,9 @@ if ACTIVE_DATABASE_URL:
         )
     }
     if is_pooler:
-        # PgBouncer transaction pooling compatibility
+        # PgBouncer transaction pooling compatibility (DISABLE_SERVER_SIDE_CURSORS not supported by psycopg2)
         DATABASES["default"]["OPTIONS"] = {
-            "sslmode": "require",
-            "DISABLE_SERVER_SIDE_CURSORS": True,
+            "sslmode": "require"
         }
 else:
     DATABASES = {

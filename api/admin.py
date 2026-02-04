@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.contrib.auth.models import User
 from .models import (
 	Device,
 	GatewayConfig,
@@ -17,7 +18,7 @@ class DeviceAdmin(admin.ModelAdmin):
 
 
 @admin.register(Customer)
-class CustomerAdmin(admin.ModelAdmin):
+class UserAdmin(admin.ModelAdmin):
 	list_display = ("customer_id", "first_name", "last_name", "email", "mobile_number", "created_at", "is_active")
 	search_fields = ("customer_id", "first_name", "last_name", "email", "mobile_number")
 	list_filter = ("is_active", "created_at")
@@ -37,6 +38,41 @@ class CustomerAdmin(admin.ModelAdmin):
 			"classes": ("collapse",)
 		}),
 	)
+
+
+# Unregister default User admin and register custom one
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class EmployeeAdmin(admin.ModelAdmin):
+	list_display = ("username", "first_name", "last_name", "email", "is_staff", "is_superuser", "date_joined")
+	search_fields = ("username", "first_name", "last_name", "email")
+	list_filter = ("is_staff", "is_superuser", "is_active", "date_joined")
+	readonly_fields = ("date_joined", "last_login")
+	fieldsets = (
+		("Login Information", {
+			"fields": ("username", "password"),
+		}),
+		("Personal Information", {
+			"fields": ("first_name", "last_name", "email")
+		}),
+		("Permissions", {
+			"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions"),
+			"classes": ("wide",)
+		}),
+		("Important Dates", {
+			"fields": ("date_joined", "last_login"),
+			"classes": ("collapse",)
+		}),
+	)
+	filter_horizontal = ("groups", "user_permissions")
+	
+	def get_queryset(self, request):
+		"""Show all staff users (employees) in the list"""
+		qs = super().get_queryset(request)
+		return qs.filter(is_staff=True)
+
 
 
 

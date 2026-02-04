@@ -5,13 +5,39 @@ from .models import (
 	SlaveDevice,
 	RegisterMapping,
 	TelemetryData,
+	Customer,
 )
 
 
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-	list_display = ("device_serial", "provisioned_at", "config_version")
-	search_fields = ("device_serial",)
+	list_display = ("device_serial", "customer", "provisioned_at", "config_version")
+	search_fields = ("device_serial", "customer__customer_id", "customer__first_name", "customer__last_name")
+	list_filter = ("provisioned_at",)
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+	list_display = ("customer_id", "first_name", "last_name", "email", "mobile_number", "created_at", "is_active")
+	search_fields = ("customer_id", "first_name", "last_name", "email", "mobile_number")
+	list_filter = ("is_active", "created_at")
+	readonly_fields = ("created_at",)
+	fieldsets = (
+		("Customer Information", {
+			"fields": ("customer_id", "first_name", "last_name", "email")
+		}),
+		("Contact Details", {
+			"fields": ("mobile_number", "address")
+		}),
+		("Status", {
+			"fields": ("is_active",)
+		}),
+		("Additional", {
+			"fields": ("notes", "created_at"),
+			"classes": ("collapse",)
+		}),
+	)
+
 
 
 class RegisterMappingInline(admin.TabularInline):

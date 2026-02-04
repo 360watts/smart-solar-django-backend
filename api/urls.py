@@ -25,6 +25,14 @@ urlpatterns = [
 	path("users/create/", views.create_user, name="create_user"),
 	path("users/<int:user_id>/", views.update_user, name="update_user"),
 	path("users/<int:user_id>/delete/", views.delete_user, name="delete_user"),
+	
+	# Customer management endpoints
+	path("customers/", views.customers_list, name="customers_list"),
+	path("customers/create/", views.create_customer, name="create_customer"),
+	path("customers/<int:customer_id>/", views.get_customer, name="get_customer"),
+	path("customers/<int:customer_id>/update/", views.update_customer, name="update_customer"),
+	path("customers/<int:customer_id>/delete/", views.delete_customer, name="delete_customer"),
+	
 	path("presets/", views.presets_list, name="presets_list"),
 	path("presets/create/", views.create_preset, name="create_preset"),
 	path("presets/<int:preset_id>/", views.update_preset, name="update_preset"),

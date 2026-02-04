@@ -439,6 +439,7 @@ def login_user(request):
             'email': user.email,
             'first_name': user.first_name,
             'last_name': user.last_name,
+            'is_staff': user.is_staff,
         },
         'tokens': {
             'refresh': str(refresh),
@@ -622,7 +623,7 @@ def update_user(request, user_id):
 @api_view(['DELETE'])
 def delete_user(request, user_id):
     """
-    Delete a user and their profile
+    Delete a user and their profile (employees only)
     """
     try:
         user = User.objects.get(id=user_id)
@@ -635,6 +636,113 @@ def delete_user(request, user_id):
     
     user.delete()
     return Response({'message': 'User deleted successfully'})
+
+
+# ========== CUSTOMER MANAGEMENT ENDPOINTS ==========
+
+@api_view(['GET'])
+def customers_list(request):
+    """
+    List all customers with optional search
+    """
+    from .serializers import CustomerSerializer
+    from .models import Customer
+    from django.db.models import Q
+    
+    search = request.GET.get('search', '').strip()
+    customers = Customer.objects.all()
+    
+    if search:
+        customers = customers.filter(
+            Q(customer_id__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search) |
+            Q(email__icontains=search) |
+            Q(mobile_number__icontains=search)
+        )
+    
+    serializer = CustomerSerializer(customers, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+def create_customer(request):
+    """
+    Create a new customer
+    """
+    from .serializers import CustomerSerializer
+    from .models import Customer
+    
+    # Auto-generate customer_id if not provided
+    if not request.data.get('customer_id'):
+        import uuid
+        request.data['customer_id'] = f"CUST{uuid.uuid4().hex[:8].upper()}"
+    
+    serializer = CustomerSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+def get_customer(request, customer_id):
+    """
+    Get a single customer by ID
+    """
+    from .serializers import CustomerSerializer
+    from .models import Customer
+    
+    try:
+        customer = Customer.objects.get(id=customer_id)
+    except Customer.DoesNotExist:
+        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = CustomerSerializer(customer)
+    return Response(serializer.data)
+
+
+@api_view(['PUT'])
+def update_customer(request, customer_id):
+    """
+    Update customer information
+    """
+    from .serializers import CustomerSerializer
+    from .models import Customer
+    
+    try:
+        customer = Customer.objects.get(id=customer_id)
+    except Customer.DoesNotExist:
+        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = CustomerSerializer(customer, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['DELETE'])
+def delete_customer(request, customer_id):
+    """
+    Delete a customer (admin only)
+    """
+    from .models import Customer
+    
+    try:
+        customer = Customer.objects.get(id=customer_id)
+    except Customer.DoesNotExist:
+        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check if customer has devices
+    if customer.devices.exists():
+        return Response(
+            {'error': f'Cannot delete customer with {customer.devices.count()} devices. Remove devices first.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    customer.delete()
+    return Response({'message': 'Customer deleted successfully'})
 
 
 @api_view(['GET'])

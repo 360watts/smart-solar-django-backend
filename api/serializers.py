@@ -1,25 +1,44 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile
+from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Customer
+
+
+class CustomerSerializer(serializers.ModelSerializer):
+    device_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Customer
+        fields = ['id', 'customer_id', 'first_name', 'last_name', 'email', 
+                  'mobile_number', 'address', 'created_at', 'is_active', 'notes', 'device_count']
+        read_only_fields = ['id', 'created_at']
+    
+    def get_device_count(self, obj):
+        return obj.devices.count()
 
 
 class DeviceSerializer(serializers.ModelSerializer):
-    user = serializers.CharField(source='user.username', read_only=True)
+    customer_name = serializers.SerializerMethodField()
+    customer_id = serializers.CharField(source='customer.customer_id', read_only=True)
+    # Legacy support
+    user = serializers.CharField(source='customer.customer_id', read_only=True)
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'user', 'provisioned_at', 'config_version']
+        fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version']
         read_only_fields = ['id', 'provisioned_at']
+    
+    def get_customer_name(self, obj):
+        return f"{obj.customer.first_name} {obj.customer.last_name}"
 
     def create(self, validated_data):
-        # Handle user assignment if provided
-        user_username = validated_data.pop('user', None)
-        if user_username:
+        # Handle customer assignment if provided
+        customer_id = self.context.get('customer_id')
+        if customer_id:
             try:
-                user = User.objects.get(username=user_username)
-                validated_data['user'] = user
-            except User.DoesNotExist:
-                raise serializers.ValidationError({'user': 'User not found'})
+                customer = Customer.objects.get(customer_id=customer_id)
+                validated_data['customer'] = customer
+            except Customer.DoesNotExist:
+                raise serializers.ValidationError({'customer': 'Customer not found'})
         return super().create(validated_data)
 
 

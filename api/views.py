@@ -440,6 +440,7 @@ def login_user(request):
             'first_name': user.first_name,
             'last_name': user.last_name,
             'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
         },
         'tokens': {
             'refresh': str(refresh),
@@ -516,6 +517,7 @@ def users_list(request):
             'mobile_number': profile.mobile_number if profile else None,
             'address': profile.address if profile else None,
             'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
             'date_joined': user.date_joined.isoformat(),
         })
     return Response(data)
@@ -533,6 +535,7 @@ def create_user(request):
     last_name = request.data.get('last_name', '')
     mobile_number = request.data.get('mobile_number', '')
     address = request.data.get('address', '')
+    is_staff = request.data.get('is_staff', False)  # Get is_staff from request, default to False
 
     if not username or not email or not password:
         return Response(
@@ -560,6 +563,10 @@ def create_user(request):
             first_name=first_name,
             last_name=last_name
         )
+        
+        # Set is_staff based on request
+        user.is_staff = is_staff
+        user.save()
 
         # Create profile
         UserProfile.objects.create(
@@ -576,6 +583,8 @@ def create_user(request):
             'last_name': user.last_name,
             'mobile_number': mobile_number,
             'address': address,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
             'date_joined': user.date_joined.isoformat(),
         }, status=status.HTTP_201_CREATED)
 
@@ -636,6 +645,32 @@ def delete_user(request, user_id):
     
     user.delete()
     return Response({'message': 'User deleted successfully'})
+
+
+@api_view(['GET'])
+def get_user_devices(request, user_id):
+    """
+    Get all devices assigned to a specific user
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Get devices assigned to this user
+    devices = Device.objects.filter(user=user)
+    
+    device_list = []
+    for device in devices:
+        device_list.append({
+            'id': device.id,
+            'serial_number': device.serial_number,
+            'name': device.name if hasattr(device, 'name') else device.serial_number,
+            'status': device.status if hasattr(device, 'status') else 'unknown',
+            'last_heartbeat': device.last_heartbeat.isoformat() if hasattr(device, 'last_heartbeat') and device.last_heartbeat else None,
+        })
+    
+    return Response(device_list)
 
 
 # ========== PROFILE MANAGEMENT ENDPOINTS ==========

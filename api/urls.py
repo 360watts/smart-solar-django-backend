@@ -26,6 +26,11 @@ urlpatterns = [
 	path("users/<int:user_id>/", views.update_user, name="update_user"),
 	path("users/<int:user_id>/delete/", views.delete_user, name="delete_user"),
 	
+	# Profile management endpoints (for current logged-in user)
+	path("profile/", views.get_profile, name="get_profile"),
+	path("profile/update/", views.update_profile, name="update_profile"),
+	path("profile/change-password/", views.change_password, name="change_password"),
+	
 	# Customer management endpoints
 	path("customers/", views.customers_list, name="customers_list"),
 	path("customers/create/", views.create_customer, name="create_customer"),

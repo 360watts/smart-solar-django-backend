@@ -638,6 +638,114 @@ def delete_user(request, user_id):
     return Response({'message': 'User deleted successfully'})
 
 
+# ========== PROFILE MANAGEMENT ENDPOINTS ==========
+
+@api_view(['GET'])
+def get_profile(request):
+    """
+    Get the current logged-in user's profile
+    """
+    user = request.user
+    if not user.is_authenticated:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    profile = getattr(user, 'userprofile', None)
+    
+    return Response({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'mobile_number': profile.mobile_number if profile else None,
+        'address': profile.address if profile else None,
+        'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
+        'date_joined': user.date_joined.isoformat(),
+    })
+
+
+@api_view(['PUT'])
+def update_profile(request):
+    """
+    Update the current logged-in user's profile
+    """
+    user = request.user
+    if not user.is_authenticated:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    # Update user fields
+    if 'first_name' in request.data:
+        user.first_name = request.data['first_name']
+    if 'last_name' in request.data:
+        user.last_name = request.data['last_name']
+    if 'email' in request.data:
+        # Check if email is already taken by another user
+        new_email = request.data['email']
+        if User.objects.filter(email=new_email).exclude(id=user.id).exists():
+            return Response({'error': 'Email already in use'}, status=status.HTTP_400_BAD_REQUEST)
+        user.email = new_email
+    
+    user.save()
+    
+    # Update profile fields
+    profile, created = UserProfile.objects.get_or_create(user=user)
+    if 'mobile_number' in request.data:
+        profile.mobile_number = request.data['mobile_number']
+    if 'address' in request.data:
+        profile.address = request.data['address']
+    profile.save()
+    
+    return Response({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'mobile_number': profile.mobile_number,
+        'address': profile.address,
+        'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
+        'date_joined': user.date_joined.isoformat(),
+    })
+
+
+@api_view(['POST'])
+def change_password(request):
+    """
+    Change the current logged-in user's password
+    """
+    user = request.user
+    if not user.is_authenticated:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    current_password = request.data.get('current_password')
+    new_password = request.data.get('new_password')
+    
+    if not current_password or not new_password:
+        return Response(
+            {'error': 'Current password and new password are required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Verify current password
+    if not user.check_password(current_password):
+        return Response({'error': 'Current password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validate new password length
+    if len(new_password) < 8:
+        return Response(
+            {'error': 'New password must be at least 8 characters long'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Set new password
+    user.set_password(new_password)
+    user.save()
+    
+    return Response({'message': 'Password changed successfully'})
+
+
 # ========== CUSTOMER MANAGEMENT ENDPOINTS ==========
 
 @api_view(['GET'])

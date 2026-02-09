@@ -1,6 +1,23 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Customer
+from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Customer, Alert
+
+
+class AlertSerializer(serializers.ModelSerializer):
+    device_serial = serializers.CharField(source='device.device_serial', read_only=True)
+    acknowledged_by_username = serializers.CharField(source='acknowledged_by.username', read_only=True, allow_null=True)
+    resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Alert
+        fields = [
+            'id', 'device', 'device_serial', 'alert_type', 'severity', 'status',
+            'title', 'message', 'triggered_at', 'acknowledged_at', 'acknowledged_by',
+            'acknowledged_by_username', 'resolved_at', 'resolved_by', 'resolved_by_username',
+            'metadata'
+        ]
+        read_only_fields = ['id', 'triggered_at', 'acknowledged_at', 'acknowledged_by', 
+                           'resolved_at', 'resolved_by']
 
 
 class CustomerSerializer(serializers.ModelSerializer):

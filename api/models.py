@@ -113,3 +113,64 @@ class TelemetryData(models.Model):
 
 	def __str__(self):
 		return f"{self.device.device_serial}:{self.data_type}={self.value}"
+
+
+class Alert(models.Model):
+	"""Persistent alerts for device monitoring"""
+	
+	class Severity(models.TextChoices):
+		CRITICAL = 'critical', 'Critical'
+		WARNING = 'warning', 'Warning'
+		INFO = 'info', 'Info'
+	
+	class Status(models.TextChoices):
+		ACTIVE = 'active', 'Active'
+		ACKNOWLEDGED = 'acknowledged', 'Acknowledged'
+		RESOLVED = 'resolved', 'Resolved'
+	
+	class AlertType(models.TextChoices):
+		DEVICE_OFFLINE = 'device_offline', 'Device Offline'
+		LOW_BATTERY = 'low_battery', 'Low Battery'
+		HIGH_TEMPERATURE = 'high_temperature', 'High Temperature'
+		COMMUNICATION_ERROR = 'communication_error', 'Communication Error'
+		THRESHOLD_EXCEEDED = 'threshold_exceeded', 'Threshold Exceeded'
+		MAINTENANCE_DUE = 'maintenance_due', 'Maintenance Due'
+		CUSTOM = 'custom', 'Custom'
+	
+	device = models.ForeignKey(Device, related_name="alerts", on_delete=models.CASCADE)
+	alert_type = models.CharField(max_length=32, choices=AlertType.choices)
+	severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
+	status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+	title = models.CharField(max_length=200)
+	message = models.TextField()
+	triggered_at = models.DateTimeField(default=timezone.now)
+	acknowledged_at = models.DateTimeField(null=True, blank=True)
+	acknowledged_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="acknowledged_alerts")
+	resolved_at = models.DateTimeField(null=True, blank=True)
+	resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="resolved_alerts")
+	metadata = models.JSONField(default=dict, blank=True)  # Store additional context
+	
+	class Meta:
+		ordering = ["-triggered_at"]
+		indexes = [
+			models.Index(fields=["device", "status"]),
+			models.Index(fields=["severity", "status"]),
+			models.Index(fields=["triggered_at"]),
+		]
+	
+	def __str__(self):
+		return f"{self.device.device_serial}: {self.title} ({self.severity})"
+	
+	def acknowledge(self, user):
+		"""Mark alert as acknowledged"""
+		self.status = self.Status.ACKNOWLEDGED
+		self.acknowledged_at = timezone.now()
+		self.acknowledged_by = user
+		self.save(update_fields=["status", "acknowledged_at", "acknowledged_by"])
+	
+	def resolve(self, user):
+		"""Mark alert as resolved"""
+		self.status = self.Status.RESOLVED
+		self.resolved_at = timezone.now()
+		self.resolved_by = user
+		self.save(update_fields=["status", "resolved_at", "resolved_by"])

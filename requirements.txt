@@ -16,3 +16,9 @@ whitenoise>=6.6.0
 python-decouple>=3.8
 psycopg2-binary>=2.9
 dj-database-url>=2.2.0
+
+# API Documentation
+drf-spectacular>=0.27.0
+
+# Security
+PyJWT>=2.8.0

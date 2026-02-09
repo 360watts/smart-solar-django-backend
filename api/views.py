@@ -5,10 +5,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
-from django.db import models
+from django.db import models, connection
 from django.db.models import Q
+from django.conf import settings
 from typing import Any
 from django.utils import timezone
+from decouple import config as env_config
 from .serializers import (
     ProvisionSerializer,
     GatewayConfigSerializer,
@@ -21,6 +23,9 @@ import logging
 import jwt
 import secrets
 from datetime import datetime, timedelta
+
+# Get JWT secret from environment variable with secure fallback
+DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +49,14 @@ def provision(request: Any) -> Response:
     # Generate random deviceId
     device_id = secrets.token_hex(6).upper()
     
-    # Generate JWT token as credentials (more standard for IoT)
-    jwt_secret = "your-jwt-secret-key"  # In production, use environment variable
+    # Generate JWT token as credentials using secure secret from environment
     jwt_payload = {
         "device_id": device_id,
         "iat": int(datetime.now().timestamp()),
         "exp": int((datetime.now() + timedelta(days=365)).timestamp()),  # 1 year expiry
         "type": "device"
     }
-    token = jwt.encode(jwt_payload, jwt_secret, algorithm="HS256")
+    token = jwt.encode(jwt_payload, DEVICE_JWT_SECRET, algorithm="HS256")
     
     # Create or get device
     device, created = Device.objects.get_or_create(device_serial=device_id)
@@ -1290,3 +1294,141 @@ def delete_slave(request, config_id, slave_id):
 
     slave.delete()
     return Response({'message': 'Slave deleted successfully'})
+
+
+# ============== Health Check Endpoint ==============
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def health_check(request: Any) -> Response:
+    """
+    Health check endpoint for load balancers and monitoring.
+    Returns system health status including database connectivity.
+    """
+    health_status = {
+        'status': 'healthy',
+        'timestamp': timezone.now().isoformat(),
+        'version': '1.0.0',
+        'checks': {}
+    }
+    
+    # Check database connectivity
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+        health_status['checks']['database'] = {'status': 'up', 'latency_ms': None}
+    except Exception as e:
+        health_status['status'] = 'unhealthy'
+        health_status['checks']['database'] = {'status': 'down', 'error': str(e)}
+    
+    # Check cache (if configured)
+    try:
+        from django.core.cache import cache
+        cache.set('health_check', 'ok', 10)
+        if cache.get('health_check') == 'ok':
+            health_status['checks']['cache'] = {'status': 'up'}
+        else:
+            health_status['checks']['cache'] = {'status': 'degraded'}
+    except Exception as e:
+        health_status['checks']['cache'] = {'status': 'not_configured'}
+    
+    status_code = status.HTTP_200_OK if health_status['status'] == 'healthy' else status.HTTP_503_SERVICE_UNAVAILABLE
+    return Response(health_status, status=status_code)
+
+
+# ============== Alert CRUD Endpoints ==============
+
+from .models import Alert
+from .serializers import AlertSerializer
+
+
+@api_view(['GET', 'POST'])
+def alerts_crud(request: Any) -> Response:
+    """
+    GET: List all alerts with optional filtering
+    POST: Create a new alert
+    """
+    if request.method == 'GET':
+        # Filter parameters
+        device_serial = request.GET.get('device')
+        severity = request.GET.get('severity')
+        alert_status = request.GET.get('status')
+        limit = int(request.GET.get('limit', 100))
+        
+        queryset = Alert.objects.all()
+        
+        if device_serial:
+            queryset = queryset.filter(device__device_serial=device_serial)
+        if severity:
+            queryset = queryset.filter(severity=severity)
+        if alert_status:
+            queryset = queryset.filter(status=alert_status)
+        
+        queryset = queryset[:limit]
+        serializer = AlertSerializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        serializer = AlertSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+def alert_detail(request: Any, alert_id: int) -> Response:
+    """
+    GET: Retrieve a single alert
+    PUT: Update an alert
+    DELETE: Delete an alert
+    """
+    try:
+        alert = Alert.objects.get(id=alert_id)
+    except Alert.DoesNotExist:
+        return Response({'error': 'Alert not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        serializer = AlertSerializer(alert)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = AlertSerializer(alert, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == 'DELETE':
+        alert.delete()
+        return Response({'message': 'Alert deleted'}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['POST'])
+def alert_acknowledge(request: Any, alert_id: int) -> Response:
+    """
+    Acknowledge an alert
+    """
+    try:
+        alert = Alert.objects.get(id=alert_id)
+    except Alert.DoesNotExist:
+        return Response({'error': 'Alert not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    alert.acknowledge(request.user)
+    serializer = AlertSerializer(alert)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+def alert_resolve(request: Any, alert_id: int) -> Response:
+    """
+    Resolve an alert
+    """
+    try:
+        alert = Alert.objects.get(id=alert_id)
+    except Alert.DoesNotExist:
+        return Response({'error': 'Alert not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    alert.resolve(request.user)
+    serializer = AlertSerializer(alert)
+    return Response(serializer.data)

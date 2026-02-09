@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'django_extensions',  # For HTTPS development server
+    'drf_spectacular',  # API documentation
     'api',
 ]
 
@@ -280,4 +281,96 @@ SIMPLE_JWT = {
 
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_TYPE_CLAIM': 'token_type',
+}
+
+# =============================================================================
+# SECURITY SETTINGS (Production)
+# =============================================================================
+
+# HTTPS/SSL Settings (enabled for production on Vercel)
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# Security Headers
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
+# HSTS (HTTP Strict Transport Security) - 1 year
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+# Content Security Policy (CSP) - Add django-csp if more control needed
+# SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
+# =============================================================================
+# API DOCUMENTATION (drf-spectacular)
+# =============================================================================
+
+REST_FRAMEWORK['DEFAULT_SCHEMA_CLASS'] = 'drf_spectacular.openapi.AutoSchema'
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Smart Solar IoT API',
+    'DESCRIPTION': 'API for managing ESP32 solar monitoring gateways, telemetry data, and alerts',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SCHEMA_PATH_PREFIX': r'/api/',
+    'COMPONENT_SPLIT_REQUEST': True,
+    'TAGS': [
+        {'name': 'Authentication', 'description': 'User authentication and registration'},
+        {'name': 'Devices', 'description': 'ESP32 device management and provisioning'},
+        {'name': 'Telemetry', 'description': 'Telemetry data ingestion and retrieval'},
+        {'name': 'Configuration', 'description': 'Gateway configuration management'},
+        {'name': 'Alerts', 'description': 'System alerts and notifications'},
+        {'name': 'Users', 'description': 'User management (admin only)'},
+        {'name': 'Customers', 'description': 'Customer management'},
+        {'name': 'Health', 'description': 'System health and monitoring'},
+    ],
+}
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'api': {
+            'handlers': ['console'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'propagate': False,
+        },
+    },
 }

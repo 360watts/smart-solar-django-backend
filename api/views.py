@@ -190,7 +190,7 @@ def logs(request: Any, device_id: str) -> Response:
 @permission_classes([AllowAny])
 @ratelimit(key='ip', rate='100/m', block=True)
 def telemetry_ingest(request: Any) -> Response:
-    \"\"\"Ingest telemetry data. Rate limited: 100 requests per minute per IP\"\"\"
+    """Ingest telemetry data. Rate limited: 100 requests per minute per IP"""
     serializer = TelemetryIngestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

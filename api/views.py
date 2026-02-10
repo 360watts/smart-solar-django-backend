@@ -1113,18 +1113,22 @@ def update_device(request, device_id):
 
 @api_view(['DELETE'])
 def delete_device(request, device_id):
-    print(f"Attempting to delete device with ID: {device_id}")
-    print(f"Available devices: {list(Device.objects.values_list('id', 'device_serial'))}")
     try:
         device = Device.objects.get(id=device_id)
-        print(f"Found device: {device.device_serial}")
+        device_serial = device.device_serial
+        
+        # Delete device (telemetry will cascade delete automatically)
+        device.delete()
+        
+        logger.info(f"Device {device_serial} deleted successfully by user {request.user}")
+        return Response({'message': 'Device deleted successfully'})
+        
     except Device.DoesNotExist:
-        print(f"Device with ID {device_id} not found")
+        logger.error(f"Device with ID {device_id} not found")
         return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    device.delete()
-    print(f"Device {device.device_serial} deleted successfully")
-    return Response({'message': 'Device deleted'})
+    except Exception as e:
+        logger.error(f"Error deleting device {device_id}: {str(e)}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])

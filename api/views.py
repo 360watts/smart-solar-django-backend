@@ -18,7 +18,7 @@ from .serializers import (
     TelemetryDataSerializer,
     DeviceSerializer,
 )
-from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping
+from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping, Customer
 import logging
 import jwt
 import secrets
@@ -58,8 +58,22 @@ def provision(request: Any) -> Response:
     }
     token = jwt.encode(jwt_payload, DEVICE_JWT_SECRET, algorithm="HS256")
     
+    # Get or create default customer for unassigned devices
+    default_customer, _ = Customer.objects.get_or_create(
+        customer_id="UNASSIGNED",
+        defaults={
+            "first_name": "Unassigned",
+            "last_name": "Device",
+            "email": "unassigned@devices.local",
+            "notes": "Default customer for newly provisioned devices"
+        }
+    )
+    
     # Create or get device
-    device, created = Device.objects.get_or_create(device_serial=device_id)
+    device, created = Device.objects.get_or_create(
+        device_serial=device_id,
+        defaults={"customer": default_customer}
+    )
     if created:
         device.provisioned_at = timezone.now()
         device.save()

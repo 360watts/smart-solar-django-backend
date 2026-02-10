@@ -205,13 +205,20 @@ def devices_list(request: Any) -> Response:
     """
     List all devices for React frontend
     """
-    devices = Device.objects.all().order_by("-provisioned_at")
+    devices = Device.objects.select_related('customer').all().order_by("-provisioned_at")
     data = []
     for device in devices:
         data.append({
+            "id": device.id,
             "device_serial": device.device_serial,
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
+            "customer": {
+                "id": device.customer.id,
+                "customer_id": device.customer.customer_id,
+                "name": f"{device.customer.first_name} {device.customer.last_name}",
+                "email": device.customer.email,
+            } if device.customer else None,
         })
     return Response(data)
 

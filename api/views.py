@@ -209,9 +209,21 @@ def telemetry_latest(request: Any, device_serial: str) -> Response:
 @api_view(["GET"])
 def devices_list(request: Any) -> Response:
     """
-    List all devices for React frontend
+    List all devices for React frontend with search functionality
     """
-    devices = Device.objects.select_related('customer').all().order_by("-provisioned_at")
+    search = request.GET.get('search', '').strip()
+    devices = Device.objects.select_related('customer', 'user').all().order_by("-provisioned_at")
+    
+    if search:
+        devices = devices.filter(
+            Q(device_serial__icontains=search) |
+            Q(user__username__icontains=search) |
+            Q(customer__first_name__icontains=search) |
+            Q(customer__last_name__icontains=search) |
+            Q(customer__customer_id__icontains=search) |
+            Q(config_version__icontains=search)
+        )
+    
     data = []
     for device in devices:
         data.append({
@@ -219,6 +231,7 @@ def devices_list(request: Any) -> Response:
             "device_serial": device.device_serial,
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
+            "user": device.user.username if device.user else None,  # Legacy field
             "customer": {
                 "id": device.customer.id,
                 "customer_id": device.customer.customer_id,
@@ -1061,14 +1074,17 @@ def delete_preset(request, preset_id):
 
 
 @api_view(['GET'])
-def devices_list(request):
+def devices_list_legacy(request):
+    """Legacy endpoint - kept for backwards compatibility"""
     search = request.GET.get('search', '')
-    devices = Device.objects.all().order_by('-provisioned_at')
+    devices = Device.objects.select_related('customer', 'user').all().order_by('-provisioned_at')
 
     if search:
         devices = devices.filter(
             Q(device_serial__icontains=search) |
             Q(user__username__icontains=search) |
+            Q(customer__first_name__icontains=search) |
+            Q(customer__last_name__icontains=search) |
             Q(config_version__icontains=search)
         )
 
@@ -1078,8 +1094,14 @@ def devices_list(request):
             'id': device.id,
             'device_serial': device.device_serial,
             'user': device.user.username if device.user else None,
-            'provisioned_at': device.provisioned_at,
+            'provisioned_at': device.provisioned_at.isoformat(),
             'config_version': device.config_version,
+            'customer': {
+                'id': device.customer.id,
+                'customer_id': device.customer.customer_id,
+                'name': f"{device.customer.first_name} {device.customer.last_name}",
+                'email': device.customer.email,
+            } if device.customer else None,
         })
     return Response(data)
 

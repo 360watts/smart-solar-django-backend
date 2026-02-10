@@ -8,6 +8,8 @@ from django.contrib.auth import authenticate
 from django.db import models, connection
 from django.db.models import Q
 from django.conf import settings
+from django.views.decorators.cache import cache_page
+from django_ratelimit.decorators import ratelimit
 from typing import Any
 from django.utils import timezone
 from decouple import config as env_config
@@ -32,11 +34,13 @@ logger = logging.getLogger(__name__)
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@ratelimit(key='ip', rate='10/m', block=True)
 def provision(request: Any) -> Response:
     """
     Provision endpoint: /api/devices/provision
     ESP32 sends: {"hwId": "MAC", "model": "esp32 wroom", "claimNonce": "IM_YOUR_DEVICE"}
     ESP32 expects: {"status": "success", "deviceId": "...", "provisionedAt": "...", "credentials": {...}}
+    Rate limited: 10 provisions per minute per IP
     """
     logger.info(f"Provision request: {request.data}")
     
@@ -184,7 +188,9 @@ def logs(request: Any, device_id: str) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@ratelimit(key='ip', rate='100/m', block=True)
 def telemetry_ingest(request: Any) -> Response:
+    \"\"\"Ingest telemetry data. Rate limited: 100 requests per minute per IP\"\"\"
     serializer = TelemetryIngestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -435,9 +441,11 @@ def register_user(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@ratelimit(key='ip', rate='5/m', block=True)
 def login_user(request):
     """
     Login user and return JWT tokens
+    Rate limited: 5 login attempts per minute per IP
     """
     username = request.data.get('username')
     password = request.data.get('password')

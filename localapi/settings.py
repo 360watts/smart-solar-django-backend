@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_extensions',  # For HTTPS development server
     'drf_spectacular',  # API documentation
+    'django_ratelimit',  # Rate limiting
     'api',
 ]
 

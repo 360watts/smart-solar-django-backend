@@ -407,8 +407,8 @@ def devices_list(request: Any) -> Response:
     page = int(request.GET.get('page', 1))
     page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
     
-    # Optimize query: only fetch related data we need
-    devices = Device.objects.select_related('customer', 'user').all().order_by("-provisioned_at")
+    # Optimize query: only fetch related data we need (including audit fields)
+    devices = Device.objects.select_related('customer', 'user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
     
     # Apply search filter
     if search:
@@ -443,6 +443,11 @@ def devices_list(request: Any) -> Response:
                 "name": f"{device.customer.first_name} {device.customer.last_name}",
                 "email": device.customer.email,
             } if device.customer else None,
+            # Audit trail fields
+            "created_by_username": device.created_by.username if device.created_by else None,
+            "created_at": device.provisioned_at.isoformat(),  # Use provisioned_at as created_at
+            "updated_by_username": device.updated_by.username if device.updated_by else None,
+            "updated_at": device.updated_at.isoformat() if device.updated_at else None,
         })
     
     # Return paginated response

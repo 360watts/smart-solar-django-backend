@@ -246,6 +246,18 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+# Cache Configuration for django-ratelimit
+# Using locmem cache for development/testing with django-ratelimit
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
+
+# django-ratelimit configuration (suppress warnings for locmem cache)
+RATELIMIT_VIEW_PREFIX = 'api:'
+
 # REST Framework settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

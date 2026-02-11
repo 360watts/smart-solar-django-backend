@@ -1,7 +1,7 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
@@ -30,6 +30,107 @@ from datetime import datetime, timedelta
 DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
 
 logger = logging.getLogger(__name__)
+
+
+# ============== CUSTOM PERMISSIONS ==============
+
+class IsStaffUser(IsAuthenticated):
+    """
+    Permission class that allows only staff users
+    """
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and request.user.is_staff
+
+
+class DeviceAuthentication:
+    """
+    Custom authentication for device JWT tokens.
+    Validates device JWT and sets request.device_id
+    """
+    @staticmethod
+    def authenticate_device(request, device_id=None):
+        """
+        Validate device JWT token from Authorization header or query params.
+        Returns (True, device_id) if valid, (False, error_message) if invalid.
+        
+        Security validations:
+        - Token presence and format
+        - JWT signature and expiration
+        - Token type verification
+        - Device ID matching
+        - Device existence check
+        - Token age validation (prevent very old provisioning tokens)
+        """
+        # Get token from Authorization header or query params
+        auth_header = request.headers.get('Authorization', '')
+        token = None
+        
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+        elif 'token' in request.GET:
+            token = request.GET.get('token')
+        elif 'secret' in request.data:
+            token = request.data.get('secret')
+        
+        if not token:
+            logger.warning(f"Device auth failed: Missing token. Device: {device_id}, IP: {request.META.get('REMOTE_ADDR')}")
+            return False, 'Missing device authentication token'
+        
+        try:
+            # Decode and validate JWT (checks signature and expiration automatically)
+            payload = jwt.decode(token, DEVICE_JWT_SECRET, algorithms=["HS256"])
+            
+            # Check token type
+            if payload.get('type') != 'device':
+                logger.warning(f"Device auth failed: Invalid token type '{payload.get('type')}'. Device: {device_id}")
+                return False, 'Invalid token type'
+            
+            # Get device_id from payload
+            token_device_id = payload.get('device_id')
+            if not token_device_id:
+                logger.warning(f"Device auth failed: No device_id in token. Device: {device_id}")
+                return False, 'Device ID not found in token'
+            
+            # If device_id provided in URL/request, verify it matches token
+            if device_id and device_id != token_device_id:
+                logger.warning(f"Device auth failed: ID mismatch. Token: {token_device_id}, Request: {device_id}, IP: {request.META.get('REMOTE_ADDR')}")
+                return False, f'Device ID mismatch: token={token_device_id}, request={device_id}'
+            
+            # Validate token age (issued at time) - reject tokens older than 2 years
+            iat = payload.get('iat')
+            if iat:
+                token_age_days = (datetime.now().timestamp() - iat) / 86400
+                if token_age_days > 730:  # 2 years
+                    logger.warning(f"Device auth failed: Token too old ({token_age_days:.0f} days). Device: {token_device_id}")
+                    return False, 'Device token is too old, please re-provision'
+            
+            # Check if device exists and get its status
+            try:
+                device = Device.objects.get(device_serial=token_device_id)
+                
+                # Future enhancement: Check if device is disabled/blocked
+                # if hasattr(device, 'is_active') and not device.is_active:
+                #     logger.warning(f"Device auth failed: Device disabled. Device: {token_device_id}")
+                #     return False, f'Device {token_device_id} has been disabled'
+                
+            except Device.DoesNotExist:
+                logger.warning(f"Device auth failed: Device not found. Device: {token_device_id}, IP: {request.META.get('REMOTE_ADDR')}")
+                return False, f'Device {token_device_id} not found'
+            
+            # Log successful authentication for audit trail
+            logger.debug(f"Device auth success: {token_device_id} from {request.META.get('REMOTE_ADDR')}")
+            
+            return True, token_device_id
+            
+        except jwt.ExpiredSignatureError:
+            logger.warning(f"Device auth failed: Expired token. Device: {device_id}, IP: {request.META.get('REMOTE_ADDR')}")
+            return False, 'Device token has expired'
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"Device auth failed: Invalid token ({str(e)}). Device: {device_id}, IP: {request.META.get('REMOTE_ADDR')}")
+            return False, f'Invalid device token: {str(e)}'
+        except Exception as e:
+            logger.error(f"Device authentication error: {str(e)}. Device: {device_id}, IP: {request.META.get('REMOTE_ADDR')}", exc_info=True)
+            return False, 'Device authentication failed'
 
 
 @api_view(["POST"])
@@ -107,7 +208,14 @@ def gateway_config(request: Any, device_id: str) -> Response:
     Config endpoint: /api/devices/{device_id}/config
     ESP32 sends: {"deviceId": "...", "firmwareVersion": "...", "configVersion": "..."}
     ESP32 expects complete config with uartConfig, slaves, registers
+    Requires device JWT authentication
     """
+    # Authenticate device
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+    if not is_valid:
+        logger.warning(f"Config request failed authentication from {device_id}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+    
     logger.info(f"Config request from {device_id}: {request.data}")
     
     # Verify device exists
@@ -137,7 +245,14 @@ def heartbeat(request: Any, device_id: str) -> Response:
     Heartbeat endpoint: /api/devices/{device_id}/heartbeat
     ESP32 sends: {"deviceId": "...", "uptimeSeconds": ..., "firmwareVersion": "...", ...}
     ESP32 expects: {"status": 1, "commands": {"updateConfig": 0/1, "reboot": 0/1, ...}}
+    Requires device JWT authentication
     """
+    # Authenticate device
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+    if not is_valid:
+        logger.warning(f"Heartbeat failed authentication from {device_id}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+    
     logger.info(f"Heartbeat from {device_id}: {request.data}")
     
     # Get device
@@ -180,7 +295,14 @@ def logs(request: Any, device_id: str) -> Response:
     """
     Logs endpoint: /api/devices/{device_id}/logs
     ESP32 sends log data when requested
+    Requires device JWT authentication
     """
+    # Authenticate device
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+    if not is_valid:
+        logger.warning(f"Logs upload failed authentication from {device_id}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+    
     logger.info(f"Logs from {device_id}: {len(request.data)} items")
     # Store logs (implement as needed)
     return Response({"status": "stored"}, status=status.HTTP_200_OK)
@@ -190,7 +312,21 @@ def logs(request: Any, device_id: str) -> Response:
 @permission_classes([AllowAny])
 @ratelimit(key='ip', rate='100/m', block=True)
 def telemetry_ingest(request: Any) -> Response:
-    """Ingest telemetry data. Rate limited: 100 requests per minute per IP"""
+    """
+    Ingest telemetry data. Rate limited: 100 requests per minute per IP
+    Requires device JWT authentication
+    """
+    # Extract device_id from request data
+    device_id = request.data.get('deviceId')
+    if not device_id:
+        return Response({"error": "deviceId is required"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Authenticate device
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+    if not is_valid:
+        logger.warning(f"Telemetry ingest failed authentication from {device_id}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+    
     serializer = TelemetryIngestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -201,15 +337,27 @@ def telemetry_ingest(request: Any) -> Response:
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def telemetry_latest(request: Any, device_serial: str) -> Response:
+    """
+    Get latest telemetry for a device.
+    Requires device JWT authentication matching the device_serial.
+    """
+    # Authenticate device
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_serial)
+    if not is_valid:
+        logger.warning(f"Telemetry fetch failed authentication for {device_serial}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+    
     limit = int(request.GET.get("limit", 10))
     qs = TelemetryData.objects.filter(device__device_serial=device_serial).order_by("-timestamp")[:limit]
     return Response(TelemetryDataSerializer(qs, many=True).data)
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def devices_list(request: Any) -> Response:
     """
     List all devices for React frontend with search functionality
+    Requires staff authentication
     """
     search = request.GET.get('search', '').strip()
     devices = Device.objects.select_related('customer', 'user').all().order_by("-provisioned_at")
@@ -243,9 +391,11 @@ def devices_list(request: Any) -> Response:
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def config_get(request: Any) -> Response:
     """
     Get gateway configuration for React frontend
+    Requires staff authentication
     """
     config = GatewayConfig.objects.order_by("-updated_at").first()
     if not config:
@@ -255,9 +405,11 @@ def config_get(request: Any) -> Response:
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def telemetry_all(request: Any) -> Response:
     """
     Get all telemetry data for React frontend
+    Requires staff authentication
     """
     limit = int(request.GET.get("limit", 100))
     telemetry = TelemetryData.objects.all().order_by("-timestamp")[:limit]
@@ -265,9 +417,11 @@ def telemetry_all(request: Any) -> Response:
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def alerts_list(request: Any) -> Response:
     """
     Get system alerts for React frontend
+    Requires staff authentication
     """
     # For now, generate mock alerts based on telemetry data
     alerts = []
@@ -315,9 +469,11 @@ def alerts_list(request: Any) -> Response:
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def system_health(request: Any) -> Response:
     """
     Get system health metrics for React frontend
+    Requires staff authentication
     """
     # Calculate system health metrics
     total_devices = Device.objects.count()
@@ -356,9 +512,11 @@ def system_health(request: Any) -> Response:
 
 
 @api_view(["GET"])
+@permission_classes([IsStaffUser])
 def kpis(request: Any) -> Response:
     """
     Get key performance indicators for React frontend
+    Requires staff authentication
     """
     # Calculate KPIs from telemetry data
     recent_data = TelemetryData.objects.filter(timestamp__gte=timezone.now() - timedelta(hours=24))
@@ -496,6 +654,7 @@ def login_user(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def logout_user(request):
     """
     Logout user by blacklisting refresh token
@@ -514,6 +673,7 @@ def logout_user(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_current_user(request):
     """
     Get current authenticated user information
@@ -534,9 +694,11 @@ def get_current_user(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def users_list(request):
     """
     List all users with profiles, with optional search
+    Requires staff authentication
     """
     search = request.GET.get('search', '').strip()
     users = User.objects.all().select_related('userprofile')
@@ -570,10 +732,19 @@ def users_list(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def create_user(request):
     """
-    Create a new user (admin only)
+    Create a new user (staff only)
+    Only superusers can create staff users
     """
+    # Check if trying to create staff user
+    is_staff = request.data.get('is_staff', False)
+    if is_staff and not request.user.is_superuser:
+        return Response(
+            {'error': 'Only superusers can create staff users'},
+            status=status.HTTP_403_FORBIDDEN
+        )
     username = request.data.get('username')
     email = request.data.get('email')
     password = request.data.get('password')
@@ -642,9 +813,11 @@ def create_user(request):
 
 
 @api_view(['PUT'])
+@permission_classes([IsStaffUser])
 def update_user(request, user_id):
     """
     Update user and profile
+    Requires staff authentication
     """
     try:
         user = User.objects.get(id=user_id)
@@ -676,9 +849,10 @@ def update_user(request, user_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsStaffUser])
 def delete_user(request, user_id):
     """
-    Delete a user and their profile (employees only)
+    Delete a user and their profile (staff only)
     """
     try:
         user = User.objects.get(id=user_id)
@@ -694,9 +868,11 @@ def delete_user(request, user_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def get_user_devices(request, user_id):
     """
     Get all devices assigned to a specific user
+    Requires staff authentication
     """
     try:
         user = User.objects.get(id=user_id)
@@ -722,13 +898,12 @@ def get_user_devices(request, user_id):
 # ========== PROFILE MANAGEMENT ENDPOINTS ==========
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_profile(request):
     """
     Get the current logged-in user's profile
     """
     user = request.user
-    if not user.is_authenticated:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
     
     profile = getattr(user, 'userprofile', None)
     
@@ -747,13 +922,12 @@ def get_profile(request):
 
 
 @api_view(['PUT'])
+@permission_classes([IsAuthenticated])
 def update_profile(request):
     """
     Update the current logged-in user's profile
     """
     user = request.user
-    if not user.is_authenticated:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
     
     # Update user fields
     if 'first_name' in request.data:
@@ -792,13 +966,12 @@ def update_profile(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def change_password(request):
     """
     Change the current logged-in user's password
     """
     user = request.user
-    if not user.is_authenticated:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
     
     current_password = request.data.get('current_password')
     new_password = request.data.get('new_password')
@@ -830,9 +1003,11 @@ def change_password(request):
 # ========== CUSTOMER MANAGEMENT ENDPOINTS ==========
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def customers_list(request):
     """
     List all customers with optional search
+    Requires staff authentication
     """
     from .serializers import CustomerSerializer
     from .models import Customer
@@ -855,9 +1030,11 @@ def customers_list(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def create_customer(request):
     """
     Create a new customer
+    Requires staff authentication
     """
     from .serializers import CustomerSerializer
     from .models import Customer
@@ -875,9 +1052,11 @@ def create_customer(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def get_customer(request, customer_id):
     """
     Get a single customer by ID
+    Requires staff authentication
     """
     from .serializers import CustomerSerializer
     from .models import Customer
@@ -892,9 +1071,11 @@ def get_customer(request, customer_id):
 
 
 @api_view(['PUT'])
+@permission_classes([IsStaffUser])
 def update_customer(request, customer_id):
     """
     Update customer information
+    Requires staff authentication
     """
     from .serializers import CustomerSerializer
     from .models import Customer
@@ -912,9 +1093,10 @@ def update_customer(request, customer_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsStaffUser])
 def delete_customer(request, customer_id):
     """
-    Delete a customer (admin only)
+    Delete a customer (staff only)
     """
     from .models import Customer
     
@@ -935,6 +1117,7 @@ def delete_customer(request, customer_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def presets_list(request):
     configs = GatewayConfig.objects.all().order_by('-updated_at')
     data = []
@@ -968,6 +1151,7 @@ def presets_list(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def create_preset(request):
     name = request.data.get('name', '')
     description = request.data.get('description', '')
@@ -1021,6 +1205,7 @@ def create_preset(request):
 
 
 @api_view(['PUT'])
+@permission_classes([IsStaffUser])
 def update_preset(request, preset_id):
     try:
         config = GatewayConfig.objects.get(id=preset_id)
@@ -1063,6 +1248,7 @@ def update_preset(request, preset_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsStaffUser])
 def delete_preset(request, preset_id):
     try:
         config = GatewayConfig.objects.get(id=preset_id)
@@ -1074,8 +1260,9 @@ def delete_preset(request, preset_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def devices_list_legacy(request):
-    """Legacy endpoint - kept for backwards compatibility"""
+    """Legacy endpoint - kept for backwards compatibility. Requires staff authentication."""
     search = request.GET.get('search', '')
     devices = Device.objects.select_related('customer', 'user').all().order_by('-provisioned_at')
 
@@ -1107,6 +1294,7 @@ def devices_list_legacy(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def create_device(request):
     serializer = DeviceSerializer(data=request.data)
     if serializer.is_valid():
@@ -1122,6 +1310,7 @@ def create_device(request):
 
 
 @api_view(['PUT'])
+@permission_classes([IsStaffUser])
 def update_device(request, device_id):
     try:
         device = Device.objects.get(id=device_id)
@@ -1142,6 +1331,7 @@ def update_device(request, device_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsStaffUser])
 def delete_device(request, device_id):
     try:
         device = Device.objects.get(id=device_id)
@@ -1162,9 +1352,11 @@ def delete_device(request, device_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsStaffUser])
 def slaves_list(request, config_id):
     """
     Get all slaves for a gateway configuration
+    Requires staff authentication
     """
     try:
         config = GatewayConfig.objects.get(config_id=config_id)
@@ -1198,9 +1390,11 @@ def slaves_list(request, config_id):
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def create_slave(request, config_id):
     """
     Create a new slave device for a gateway configuration
+    Requires staff authentication
     """
     try:
         config = GatewayConfig.objects.get(config_id=config_id)
@@ -1272,9 +1466,11 @@ def create_slave(request, config_id):
 
 
 @api_view(['PUT'])
+@permission_classes([IsStaffUser])
 def update_slave(request, config_id, slave_id):
     """
     Update a slave device
+    Requires staff authentication
     """
     try:
         config = GatewayConfig.objects.get(config_id=config_id)
@@ -1335,9 +1531,11 @@ def update_slave(request, config_id, slave_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsStaffUser])
 def delete_slave(request, config_id, slave_id):
     """
     Delete a slave device
+    Requires staff authentication
     """
     try:
         config = GatewayConfig.objects.get(config_id=config_id)
@@ -1398,10 +1596,12 @@ from .serializers import AlertSerializer
 
 
 @api_view(['GET', 'POST'])
+@permission_classes([IsStaffUser])
 def alerts_crud(request: Any) -> Response:
     """
     GET: List all alerts with optional filtering
     POST: Create a new alert
+    Requires staff authentication
     """
     if request.method == 'GET':
         # Filter parameters
@@ -1432,11 +1632,13 @@ def alerts_crud(request: Any) -> Response:
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsStaffUser])
 def alert_detail(request: Any, alert_id: int) -> Response:
     """
     GET: Retrieve a single alert
     PUT: Update an alert
     DELETE: Delete an alert
+    Requires staff authentication
     """
     try:
         alert = Alert.objects.get(id=alert_id)
@@ -1460,9 +1662,11 @@ def alert_detail(request: Any, alert_id: int) -> Response:
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def alert_acknowledge(request: Any, alert_id: int) -> Response:
     """
     Acknowledge an alert
+    Requires staff authentication
     """
     try:
         alert = Alert.objects.get(id=alert_id)
@@ -1475,9 +1679,11 @@ def alert_acknowledge(request: Any, alert_id: int) -> Response:
 
 
 @api_view(['POST'])
+@permission_classes([IsStaffUser])
 def alert_resolve(request: Any, alert_id: int) -> Response:
     """
     Resolve an alert
+    Requires staff authentication
     """
     try:
         alert = Alert.objects.get(id=alert_id)

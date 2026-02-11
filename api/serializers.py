@@ -80,14 +80,53 @@ class DeviceSerializer(serializers.ModelSerializer):
     customer_id = serializers.CharField(source='customer.customer_id', read_only=True)
     # User field - writable for backwards compatibility with legacy frontend
     user = serializers.CharField(write_only=False, required=False, allow_blank=True)
+    # Audit trail fields
+    created_by_username = serializers.SerializerMethodField()
+    created_at = serializers.SerializerMethodField()
+    updated_by_username = serializers.SerializerMethodField()
+    updated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version']
+        fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version',
+                  'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
         read_only_fields = ['id', 'provisioned_at', 'customer_id', 'customer_name']
     
     def get_customer_name(self, obj):
         return f"{obj.customer.first_name} {obj.customer.last_name}"
+    
+    def get_created_by_username(self, obj):
+        try:
+            if hasattr(obj, 'created_by') and obj.created_by:
+                return obj.created_by.username
+        except AttributeError:
+            pass
+        return None
+    
+    def get_created_at(self, obj):
+        try:
+            # Use provisioned_at as created_at since devices don't have a separate created_at field
+            if hasattr(obj, 'provisioned_at') and obj.provisioned_at:
+                return obj.provisioned_at.isoformat()
+        except AttributeError:
+            pass
+        return None
+    
+    def get_updated_by_username(self, obj):
+        try:
+            if hasattr(obj, 'updated_by') and obj.updated_by:
+                return obj.updated_by.username
+        except AttributeError:
+            pass
+        return None
+    
+    def get_updated_at(self, obj):
+        try:
+            if hasattr(obj, 'updated_at') and obj.updated_at:
+                return obj.updated_at.isoformat()
+        except AttributeError:
+            pass
+        return None
 
     def to_representation(self, instance):
         """
@@ -124,6 +163,20 @@ class DeviceSerializer(serializers.ModelSerializer):
                 validated_data['customer'] = customer
             except Customer.DoesNotExist:
                 raise serializers.ValidationError({'customer': 'Customer not found'})
+        
+        # If no customer assigned, use or create default customer
+        if 'customer' not in validated_data:
+            from .models import Customer
+            default_customer, _ = Customer.objects.get_or_create(
+                customer_id="DEFAULT",
+                defaults={
+                    "first_name": "Unassigned",
+                    "last_name": "Devices",
+                    "email": "default@example.com",
+                    "notes": "Default customer for newly provisioned devices"
+                }
+            )
+            validated_data['customer'] = default_customer
         
         instance = super().create(validated_data)
         

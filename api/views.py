@@ -196,17 +196,21 @@ def provision(request: Any) -> Response:
         }
     )
     
-    # Get or create system user for auto-provisioned devices
+    # Get or create system user for auto-provisioned devices (as staff/employee)
     system_user, _ = User.objects.get_or_create(
         username="system",
         defaults={
             "email": "system@devices.local",
-            "is_staff": False,
+            "is_staff": True,
             "is_active": True,
             "first_name": "System",
             "last_name": "Auto-Provision"
         }
     )
+    # Ensure system user is staff even if it already existed
+    if not system_user.is_staff:
+        system_user.is_staff = True
+        system_user.save()
     
     # Create or get device
     device, created = Device.objects.get_or_create(
@@ -971,16 +975,17 @@ def get_user_devices(request, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
     
     # Get devices assigned to this user
-    devices = Device.objects.filter(user=user)
+    devices = Device.objects.filter(user=user).select_related('customer')
     
     device_list = []
     for device in devices:
         device_list.append({
             'id': device.id,
-            'serial_number': device.serial_number,
-            'name': device.name if hasattr(device, 'name') else device.serial_number,
-            'status': device.status if hasattr(device, 'status') else 'unknown',
-            'last_heartbeat': device.last_heartbeat.isoformat() if hasattr(device, 'last_heartbeat') and device.last_heartbeat else None,
+            'device_serial': device.device_serial,
+            'customer_id': device.customer.customer_id if device.customer else None,
+            'customer_name': f"{device.customer.first_name} {device.customer.last_name}" if device.customer else None,
+            'provisioned_at': device.provisioned_at.isoformat() if device.provisioned_at else None,
+            'config_version': device.config_version,
         })
     
     return Response(device_list)

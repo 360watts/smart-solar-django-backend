@@ -287,7 +287,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
     """
     Heartbeat endpoint: /api/devices/{device_id}/heartbeat
     ESP32 sends: {"deviceId": "...", "uptimeSeconds": ..., "firmwareVersion": "...", ...}
-    ESP32 expects: {"status": 1, "commands": {"updateConfig": 0/1, "reboot": 0/1, ...}}
+    ESP32 expects: {"status": 1, "commands": {"updateConfig": 0/1, "reboot": 0/1, "hardReset": 0/1, ...}}
     Requires device JWT authentication
     """
     # Authenticate device
@@ -325,6 +325,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
             "updateNetwork": 0,
             "sendLogs": 0,
             "clearLogs": 0,
+            "hardReset": 0,
         },
         "message": "OK"
     }
@@ -975,15 +976,13 @@ def get_user_devices(request, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
     
     # Get devices assigned to this user
-    devices = Device.objects.filter(user=user).select_related('customer')
+    devices = Device.objects.filter(user=user)
     
     device_list = []
     for device in devices:
         device_list.append({
             'id': device.id,
             'device_serial': device.device_serial,
-            'customer_id': device.customer.customer_id if device.customer else None,
-            'customer_name': f"{device.customer.first_name} {device.customer.last_name}" if device.customer else None,
             'provisioned_at': device.provisioned_at.isoformat() if device.provisioned_at else None,
             'config_version': device.config_version,
         })

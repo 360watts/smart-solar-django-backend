@@ -37,13 +37,14 @@ logger = logging.getLogger(__name__)
 def set_audit_fields(instance, request):
     """
     Helper function to automatically set created_by and updated_by fields.
-    Only sets created_by on new instances (pk is None).
+    Sets created_by if not already set (for new instances).
     Always sets updated_by on any save.
     Safely handles cases where fields don't exist yet (pre-migration).
     """
     if request and hasattr(request, 'user') and request.user.is_authenticated:
         try:
-            if not instance.pk and hasattr(instance, 'created_by'):  # New object
+            # Set created_by if it's not set yet (new object or never had created_by)
+            if hasattr(instance, 'created_by') and not instance.created_by:
                 instance.created_by = request.user
             if hasattr(instance, 'updated_by'):
                 instance.updated_by = request.user
@@ -195,13 +196,30 @@ def provision(request: Any) -> Response:
         }
     )
     
+    # Get or create system user for auto-provisioned devices
+    system_user, _ = User.objects.get_or_create(
+        username="system",
+        defaults={
+            "email": "system@devices.local",
+            "is_staff": False,
+            "is_active": True,
+            "first_name": "System",
+            "last_name": "Auto-Provision"
+        }
+    )
+    
     # Create or get device
     device, created = Device.objects.get_or_create(
         device_serial=device_id,
-        defaults={"customer": default_customer}
+        defaults={
+            "customer": default_customer,
+            "created_by": system_user
+        }
     )
     if created:
         device.provisioned_at = timezone.now()
+        device.created_by = system_user
+        device.updated_by = system_user
         device.save()
     
     logger.info(f"Device {'created' if created else 'found'}: {device_id}")
@@ -1376,13 +1394,9 @@ def create_device(request):
         # Set audit fields
         set_audit_fields(device, request)
         device.save()
-        return Response({
-            'id': device.id,
-            'device_serial': device.device_serial,
-            'user': device.user.username if device.user else None,
-            'provisioned_at': device.provisioned_at,
-            'config_version': device.config_version,
-        }, status=status.HTTP_201_CREATED)
+        # Re-serialize to include audit fields
+        response_serializer = DeviceSerializer(device)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1400,13 +1414,9 @@ def update_device(request, device_id):
         # Set audit fields
         set_audit_fields(device, request)
         device.save()
-        return Response({
-            'id': device.id,
-            'device_serial': device.device_serial,
-            'user': device.user.username if device.user else None,
-            'provisioned_at': device.provisioned_at,
-            'config_version': device.config_version,
-        })
+        # Re-serialize to include audit fields
+        response_serializer = DeviceSerializer(device)
+        return Response(response_serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

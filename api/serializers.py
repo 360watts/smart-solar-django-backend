@@ -7,30 +7,72 @@ class AlertSerializer(serializers.ModelSerializer):
     device_serial = serializers.CharField(source='device.device_serial', read_only=True)
     acknowledged_by_username = serializers.CharField(source='acknowledged_by.username', read_only=True, allow_null=True)
     resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True, allow_null=True)
+    created_by_username = serializers.SerializerMethodField()
     
     class Meta:
         model = Alert
         fields = [
             'id', 'device', 'device_serial', 'alert_type', 'severity', 'status',
-            'title', 'message', 'triggered_at', 'acknowledged_at', 'acknowledged_by',
-            'acknowledged_by_username', 'resolved_at', 'resolved_by', 'resolved_by_username',
-            'metadata'
+            'title', 'message', 'triggered_at', 'created_by_username',
+            'acknowledged_at', 'acknowledged_by', 'acknowledged_by_username', 
+            'resolved_at', 'resolved_by', 'resolved_by_username', 'metadata'
         ]
-        read_only_fields = ['id', 'triggered_at', 'acknowledged_at', 'acknowledged_by', 
-                           'resolved_at', 'resolved_by']
+        read_only_fields = ['id', 'triggered_at', 'created_by_username',
+                           'acknowledged_at', 'acknowledged_by', 'resolved_at', 'resolved_by']
+    
+    def get_created_by_username(self, obj):
+        """Safely get created_by username, handling pre-migration state"""
+        try:
+            return obj.created_by.username if hasattr(obj, 'created_by') and obj.created_by else None
+        except AttributeError:
+            return None
 
 
 class CustomerSerializer(serializers.ModelSerializer):
     device_count = serializers.SerializerMethodField()
+    created_by_username = serializers.SerializerMethodField()
+    updated_by_username = serializers.SerializerMethodField()
+    created_at = serializers.SerializerMethodField()
+    updated_at = serializers.SerializerMethodField()
     
     class Meta:
         model = Customer
         fields = ['id', 'customer_id', 'first_name', 'last_name', 'email', 
-                  'mobile_number', 'address', 'created_at', 'is_active', 'notes', 'device_count']
-        read_only_fields = ['id', 'created_at']
+                  'mobile_number', 'address', 'created_at', 'created_by_username',
+                  'updated_at', 'updated_by_username', 'is_active', 'notes', 'device_count']
+        read_only_fields = ['id', 'created_at', 'created_by_username',
+                           'updated_at', 'updated_by_username']
     
     def get_device_count(self, obj):
         return obj.devices.count()
+    
+    def get_created_by_username(self, obj):
+        """Safely get created_by username, handling pre-migration state"""
+        try:
+            return obj.created_by.username if hasattr(obj, 'created_by') and obj.created_by else None
+        except AttributeError:
+            return None
+    
+    def get_updated_by_username(self, obj):
+        """Safely get updated_by username, handling pre-migration state"""
+        try:
+            return obj.updated_by.username if hasattr(obj, 'updated_by') and obj.updated_by else None
+        except AttributeError:
+            return None
+    
+    def get_created_at(self, obj):
+        """Safely get created_at, handling pre-migration state"""
+        try:
+            return obj.created_at if hasattr(obj, 'created_at') else None
+        except AttributeError:
+            return None
+    
+    def get_updated_at(self, obj):
+        """Safely get updated_at, handling pre-migration state"""
+        try:
+            return obj.updated_at if hasattr(obj, 'updated_at') else None
+        except AttributeError:
+            return None
 
 
 class DeviceSerializer(serializers.ModelSerializer):

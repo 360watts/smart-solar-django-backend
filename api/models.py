@@ -22,6 +22,9 @@ class Customer(models.Model):
     mobile_number = models.CharField(max_length=15, blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='customers_created')
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='customers_updated')
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, null=True)
 
@@ -41,6 +44,9 @@ class Device(models.Model):
 	csr_pem = models.TextField(blank=True, null=True)
 	provisioned_at = models.DateTimeField(default=timezone.now)
 	config_version = models.CharField(max_length=32, blank=True, null=True)
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_created')
+	updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_updated')
+	updated_at = models.DateTimeField(auto_now=True)
 
 	def __str__(self):
 		return self.device_serial
@@ -49,7 +55,10 @@ class Device(models.Model):
 class GatewayConfig(models.Model):
 	config_id = models.CharField(max_length=64, unique=True)
 	name = models.CharField(max_length=100, blank=True, default='')
-	updated_at = models.DateTimeField(default=timezone.now)
+	created_at = models.DateTimeField(default=timezone.now)
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='gateway_configs_created')
+	updated_at = models.DateTimeField(auto_now=True)
+	updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='gateway_configs_updated')
 	config_schema_ver = models.PositiveIntegerField(default=1)
 	baud_rate = models.PositiveIntegerField(default=9600)
 	data_bits = models.PositiveSmallIntegerField(default=8)
@@ -144,6 +153,7 @@ class Alert(models.Model):
 	title = models.CharField(max_length=200)
 	message = models.TextField()
 	triggered_at = models.DateTimeField(default=timezone.now)
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts_created")
 	acknowledged_at = models.DateTimeField(null=True, blank=True)
 	acknowledged_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="acknowledged_alerts")
 	resolved_at = models.DateTimeField(null=True, blank=True)

@@ -32,6 +32,27 @@ DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
 logger = logging.getLogger(__name__)
 
 
+# ============== AUDIT TRAIL UTILITIES ==============
+
+def set_audit_fields(instance, request):
+    """
+    Helper function to automatically set created_by and updated_by fields.
+    Only sets created_by on new instances (pk is None).
+    Always sets updated_by on any save.
+    Safely handles cases where fields don't exist yet (pre-migration).
+    """
+    if request and hasattr(request, 'user') and request.user.is_authenticated:
+        try:
+            if not instance.pk and hasattr(instance, 'created_by'):  # New object
+                instance.created_by = request.user
+            if hasattr(instance, 'updated_by'):
+                instance.updated_by = request.user
+        except AttributeError:
+            # Fields don't exist yet (migration not applied)
+            pass
+    return instance
+
+
 # ============== CUSTOM PERMISSIONS ==============
 
 class IsStaffUser(IsAuthenticated):
@@ -437,13 +458,16 @@ def config_get(request: Any) -> Response:
 
 @api_view(["GET"])
 @permission_classes([IsStaffUser])
+@cache_page(60)  # Cache for 60 seconds
 def telemetry_all(request: Any) -> Response:
     """
     Get all telemetry data for React frontend
     Requires staff authentication
+    Optimized with select_related for foreign key lookups
+    Cached for 60 seconds to reduce database load
     """
     limit = int(request.GET.get("limit", 100))
-    telemetry = TelemetryData.objects.all().order_by("-timestamp")[:limit]
+    telemetry = TelemetryData.objects.select_related('device').order_by("-timestamp")[:limit]
     return Response(TelemetryDataSerializer(telemetry, many=True).data)
 
 
@@ -453,15 +477,24 @@ def alerts_list(request: Any) -> Response:
     """
     Get system alerts for React frontend
     Requires staff authentication
+    Optimized with select_related to reduce database queries
     """
     # For now, generate mock alerts based on telemetry data
     alerts = []
-    recent_telemetry = TelemetryData.objects.filter(timestamp__gte=timezone.now() - timedelta(hours=1))
+    recent_telemetry = TelemetryData.objects.select_related('device').filter(timestamp__gte=timezone.now() - timedelta(hours=1))
+    
+    # Get all devices at once to avoid N+1 queries
+    devices = Device.objects.all()
+    
+    # Build a map of device to latest telemetry "
+    device_latest_telemetry = {}
+    for telemetry in recent_telemetry.order_by('-timestamp'):
+        if telemetry.device_id not in device_latest_telemetry:
+            device_latest_telemetry[telemetry.device_id] = telemetry
     
     # Check for offline devices
-    devices = Device.objects.all()
     for device in devices:
-        last_heartbeat = recent_telemetry.filter(device=device).order_by("-timestamp").first()
+        last_heartbeat = device_latest_telemetry.get(device.id)
         if not last_heartbeat or (timezone.now() - last_heartbeat.timestamp).total_seconds() > 300:  # 5 minutes
             alerts.append({
                 "id": f"device_offline_{device.device_serial}",
@@ -501,10 +534,12 @@ def alerts_list(request: Any) -> Response:
 
 @api_view(["GET"])
 @permission_classes([IsStaffUser])
+@cache_page(30)  # Cache for 30 seconds since it's for monitoring
 def system_health(request: Any) -> Response:
     """
     Get system health metrics for React frontend
     Requires staff authentication
+    Cached for 30 seconds to balance freshness and performance
     """
     # Calculate system health metrics
     total_devices = Device.objects.count()
@@ -544,10 +579,12 @@ def system_health(request: Any) -> Response:
 
 @api_view(["GET"])
 @permission_classes([IsStaffUser])
+@cache_page(60)  # Cache for 60 seconds  
 def kpis(request: Any) -> Response:
     """
     Get key performance indicators for React frontend
     Requires staff authentication
+    Cached for 60 seconds to reduce calculation overhead
     """
     # Calculate KPIs from telemetry data
     recent_data = TelemetryData.objects.filter(timestamp__gte=timezone.now() - timedelta(hours=24))
@@ -1077,8 +1114,11 @@ def create_customer(request):
     
     serializer = CustomerSerializer(data=request.data)
     if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        instance = serializer.save()
+        # Set audit fields
+        set_audit_fields(instance, request)
+        instance.save()
+        return Response(CustomerSerializer(instance).data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1118,8 +1158,11 @@ def update_customer(request, customer_id):
     
     serializer = CustomerSerializer(customer, data=request.data, partial=True)
     if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data)
+        instance = serializer.save()
+        # Set audit fields
+        set_audit_fields(instance, request)
+        instance.save()
+        return Response(CustomerSerializer(instance).data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1330,6 +1373,9 @@ def create_device(request):
     serializer = DeviceSerializer(data=request.data)
     if serializer.is_valid():
         device = serializer.save()
+        # Set audit fields
+        set_audit_fields(device, request)
+        device.save()
         return Response({
             'id': device.id,
             'device_serial': device.device_serial,
@@ -1351,6 +1397,9 @@ def update_device(request, device_id):
     serializer = DeviceSerializer(device, data=request.data, partial=True)
     if serializer.is_valid():
         device = serializer.save()
+        # Set audit fields
+        set_audit_fields(device, request)
+        device.save()
         return Response({
             'id': device.id,
             'device_serial': device.device_serial,

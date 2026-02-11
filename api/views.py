@@ -356,12 +356,22 @@ def telemetry_latest(request: Any, device_serial: str) -> Response:
 @permission_classes([IsStaffUser])
 def devices_list(request: Any) -> Response:
     """
-    List all devices for React frontend with search functionality
+    List all devices for React frontend with search and pagination
     Requires staff authentication
+    
+    Query Parameters:
+    - search: Search term (device_serial, user, customer name, etc.)
+    - page: Page number (default: 1)
+    - page_size: Items per page (default: 25, max: 100)
     """
     search = request.GET.get('search', '').strip()
+    page = int(request.GET.get('page', 1))
+    page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
+    
+    # Optimize query: only fetch related data we need
     devices = Device.objects.select_related('customer', 'user').all().order_by("-provisioned_at")
     
+    # Apply search filter
     if search:
         devices = devices.filter(
             Q(device_serial__icontains=search) |
@@ -372,8 +382,16 @@ def devices_list(request: Any) -> Response:
             Q(config_version__icontains=search)
         )
     
+    # Get total count before pagination (only count filtered results)
+    total_count = devices.count()
+    
+    # Apply pagination
+    offset = (page - 1) * page_size
+    paginated_devices = devices[offset:offset + page_size]
+    
+    # Format device data
     data = []
-    for device in devices:
+    for device in paginated_devices:
         data.append({
             "id": device.id,
             "device_serial": device.device_serial,
@@ -387,7 +405,20 @@ def devices_list(request: Any) -> Response:
                 "email": device.customer.email,
             } if device.customer else None,
         })
-    return Response(data)
+    
+    # Return paginated response
+    total_pages = (total_count + page_size - 1) // page_size
+    return Response({
+        'count': total_count,
+        'total_pages': total_pages,
+        'current_page': page,
+        'page_size': page_size,
+        'has_next': page < total_pages,
+        'has_previous': page > 1,
+        'next_page': page + 1 if page < total_pages else None,
+        'previous_page': page - 1 if page > 1 else None,
+        'results': data
+    })
 
 
 @api_view(["GET"])
@@ -1351,9 +1382,9 @@ def delete_device(request, device_id):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['POST'])
+@api_view(['POST', 'OPTIONS'])
 @permission_classes([IsStaffUser])
-@ratelimit(key='user', rate='10/h')
+@ratelimit(key='user', rate='100/h')
 def delete_devices_bulk(request):
     """
     Delete multiple devices at once
@@ -1397,52 +1428,66 @@ def delete_devices_bulk(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Limit bulk delete to 100 devices at a time for safety
-        if len(device_ids) > 100:
+        # Limit bulk delete to 500 devices at a time for safety
+        if len(device_ids) > 500:
             return Response(
-                {'error': 'Cannot delete more than 100 devices at once'},
+                {'error': 'Cannot delete more than 500 devices at once'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Validate all device_ids are integers
+        invalid_ids = []
+        valid_ids = []
+        for device_id in device_ids:
+            if isinstance(device_id, int):
+                valid_ids.append(device_id)
+            else:
+                invalid_ids.append(device_id)
         
         deleted_devices = []
         failed_deletions = []
         
-        # Process each device
-        for device_id in device_ids:
-            try:
-                # Validate device_id is an integer
-                if not isinstance(device_id, int):
-                    failed_deletions.append({
-                        'id': device_id,
-                        'error': 'Invalid device ID format (must be integer)'
-                    })
-                    continue
-                
-                device = Device.objects.get(id=device_id)
-                device_serial = device.device_serial
-                
-                # Delete device (telemetry will cascade delete automatically)
-                device.delete()
-                
-                deleted_devices.append({
-                    'id': device_id,
-                    'serial': device_serial
-                })
-                
-                logger.info(f"Device {device_serial} (ID: {device_id}) deleted in bulk by user {request.user}")
-                
-            except Device.DoesNotExist:
+        # Add invalid ID errors
+        for device_id in invalid_ids:
+            failed_deletions.append({
+                'id': device_id,
+                'error': 'Invalid device ID format (must be integer)'
+            })
+        
+        # Get all devices that exist for deletion
+        if valid_ids:
+            existing_devices = Device.objects.filter(id__in=valid_ids)
+            
+            # Get serials before deletion
+            device_map = {}
+            for device in existing_devices:
+                device_map[device.id] = device.device_serial
+            
+            # Get IDs that don't exist
+            existing_ids = set(existing_devices.values_list('id', flat=True))
+            missing_ids = set(valid_ids) - existing_ids
+            
+            # Add missing device errors
+            for device_id in missing_ids:
                 failed_deletions.append({
                     'id': device_id,
                     'error': 'Device not found'
                 })
-                logger.warning(f"Bulk delete attempted on non-existent device ID: {device_id}")
-            except Exception as e:
-                failed_deletions.append({
-                    'id': device_id,
-                    'error': str(e)
-                })
-                logger.error(f"Error deleting device {device_id} in bulk: {str(e)}")
+            
+            # Delete all existing devices in bulk (faster than loop)
+            delete_count = existing_devices.count()
+            existing_devices.delete()
+            
+            # Record deleted devices
+            for device_id, device_serial in device_map.items():
+                if device_id not in missing_ids:
+                    deleted_devices.append({
+                        'id': device_id,
+                        'serial': device_serial
+                    })
+            
+            # Log bulk deletion
+            logger.info(f"Bulk delete completed: {delete_count} devices deleted by user {request.user}")
         
         # Prepare response
         response_data = {

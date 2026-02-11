@@ -46,6 +46,7 @@ urlpatterns = [
 	path("devices/create/", views.create_device, name="create_device"),
 	path("devices/<int:device_id>/", views.update_device, name="update_device"),
 	path("devices/<int:device_id>/delete/", views.delete_device, name="delete_device"),
+	path("devices/delete-bulk/", views.delete_devices_bulk, name="delete_devices_bulk"),
 	path("presets/<str:config_id>/slaves/", views.slaves_list, name="slaves_list"),
 	path("presets/<str:config_id>/slaves/create/", views.create_slave, name="create_slave"),
 	path("presets/<str:config_id>/slaves/<int:slave_id>/", views.update_slave, name="update_slave"),

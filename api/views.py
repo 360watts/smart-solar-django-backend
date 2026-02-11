@@ -1351,6 +1351,127 @@ def delete_device(request, device_id):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+@ratelimit(key='user', rate='10/h')
+def delete_devices_bulk(request):
+    """
+    Delete multiple devices at once
+    
+    Request body:
+    {
+        "device_ids": [1, 2, 3, ...]  // Required: list of device IDs to delete
+    }
+    
+    Response:
+    {
+        "message": "X devices deleted successfully",
+        "deleted_count": X,
+        "deleted_devices": [
+            {"id": 1, "serial": "DEVICE001"},
+            ...
+        ],
+        "failed_deletions": [
+            {"id": 999, "error": "Device not found"}
+        ]
+    }
+    """
+    try:
+        device_ids = request.data.get('device_ids', [])
+        
+        if not device_ids:
+            return Response(
+                {'error': 'device_ids list is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not isinstance(device_ids, list):
+            return Response(
+                {'error': 'device_ids must be a list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if len(device_ids) == 0:
+            return Response(
+                {'error': 'device_ids list cannot be empty'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Limit bulk delete to 100 devices at a time for safety
+        if len(device_ids) > 100:
+            return Response(
+                {'error': 'Cannot delete more than 100 devices at once'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        deleted_devices = []
+        failed_deletions = []
+        
+        # Process each device
+        for device_id in device_ids:
+            try:
+                # Validate device_id is an integer
+                if not isinstance(device_id, int):
+                    failed_deletions.append({
+                        'id': device_id,
+                        'error': 'Invalid device ID format (must be integer)'
+                    })
+                    continue
+                
+                device = Device.objects.get(id=device_id)
+                device_serial = device.device_serial
+                
+                # Delete device (telemetry will cascade delete automatically)
+                device.delete()
+                
+                deleted_devices.append({
+                    'id': device_id,
+                    'serial': device_serial
+                })
+                
+                logger.info(f"Device {device_serial} (ID: {device_id}) deleted in bulk by user {request.user}")
+                
+            except Device.DoesNotExist:
+                failed_deletions.append({
+                    'id': device_id,
+                    'error': 'Device not found'
+                })
+                logger.warning(f"Bulk delete attempted on non-existent device ID: {device_id}")
+            except Exception as e:
+                failed_deletions.append({
+                    'id': device_id,
+                    'error': str(e)
+                })
+                logger.error(f"Error deleting device {device_id} in bulk: {str(e)}")
+        
+        # Prepare response
+        response_data = {
+            'message': f'{len(deleted_devices)} devices deleted successfully',
+            'deleted_count': len(deleted_devices),
+            'deleted_devices': deleted_devices,
+        }
+        
+        # Only include failed_deletions if there are any
+        if failed_deletions:
+            response_data['failed_deletions'] = failed_deletions
+            response_data['failed_count'] = len(failed_deletions)
+        
+        # Return appropriate status code
+        if failed_deletions and not deleted_devices:
+            # All deletions failed
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # At least some deletions succeeded
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error in bulk device deletion: {str(e)}")
+        return Response(
+            {'error': f'Bulk deletion error: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
 def slaves_list(request, config_id):

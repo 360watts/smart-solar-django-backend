@@ -36,18 +36,44 @@ class CustomerSerializer(serializers.ModelSerializer):
 class DeviceSerializer(serializers.ModelSerializer):
     customer_name = serializers.SerializerMethodField()
     customer_id = serializers.CharField(source='customer.customer_id', read_only=True)
-    # Legacy support
-    user = serializers.CharField(source='customer.customer_id', read_only=True)
+    # User field - writable for backwards compatibility with legacy frontend
+    user = serializers.CharField(write_only=False, required=False, allow_blank=True)
 
     class Meta:
         model = Device
         fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version']
-        read_only_fields = ['id', 'provisioned_at']
+        read_only_fields = ['id', 'provisioned_at', 'customer_id', 'customer_name']
     
     def get_customer_name(self, obj):
         return f"{obj.customer.first_name} {obj.customer.last_name}"
 
+    def to_representation(self, instance):
+        """
+        Override representation to return username instead of customer_id for user field
+        """
+        ret = super().to_representation(instance)
+        # Return username if user is assigned, otherwise return None
+        ret['user'] = instance.user.username if instance.user else None
+        return ret
+
+    def validate_user(self, value):
+        """
+        Validate that the username exists and return the User object
+        """
+        if not value:
+            # Allow empty/null user assignment
+            return None
+        
+        try:
+            user = User.objects.get(username=value)
+            return user
+        except User.DoesNotExist:
+            raise serializers.ValidationError(f"User '{value}' does not exist")
+
     def create(self, validated_data):
+        # Extract user if provided
+        user = validated_data.pop('user', None)
+        
         # Handle customer assignment if provided
         customer_id = self.context.get('customer_id')
         if customer_id:
@@ -56,7 +82,35 @@ class DeviceSerializer(serializers.ModelSerializer):
                 validated_data['customer'] = customer
             except Customer.DoesNotExist:
                 raise serializers.ValidationError({'customer': 'Customer not found'})
-        return super().create(validated_data)
+        
+        instance = super().create(validated_data)
+        
+        # Assign user if provided
+        if user:
+            instance.user = user
+            instance.save()
+        
+        return instance
+
+    def update(self, instance, validated_data):
+        """
+        Update device, including user field
+        """
+        # Extract user if provided
+        user = validated_data.pop('user', None)
+        
+        # Update other fields
+        instance = super().update(instance, validated_data)
+        
+        # Update user if provided in request
+        if 'user' in self.initial_data:
+            if user:
+                instance.user = user
+            else:
+                instance.user = None
+            instance.save()
+        
+        return instance
 
 
 class RegisterMappingSerializer(serializers.ModelSerializer):

@@ -391,7 +391,11 @@ def telemetry_latest(request: Any, device_serial: str) -> Response:
         logger.warning(f"Telemetry fetch failed authentication for {device_serial}: {result}")
         return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
     
-    limit = int(request.GET.get("limit", 10))
+    try:
+        limit = int(request.GET.get("limit", 10))
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid limit parameter. Must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+    
     qs = TelemetryData.objects.filter(device__device_serial=device_serial).order_by("-timestamp")[:limit]
     return Response(TelemetryDataSerializer(qs, many=True).data)
 
@@ -409,8 +413,11 @@ def devices_list(request: Any) -> Response:
     - page_size: Items per page (default: 25, max: 100)
     """
     search = request.GET.get('search', '').strip()
-    page = int(request.GET.get('page', 1))
-    page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
+    try:
+        page = int(request.GET.get('page', 1))
+        page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid page or page_size parameter. Must be integers."}, status=status.HTTP_400_BAD_REQUEST)
     
     # Optimize query: only fetch related data we need (including audit fields)
     devices = Device.objects.select_related('customer', 'user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
@@ -494,7 +501,11 @@ def telemetry_all(request: Any) -> Response:
     Optimized with select_related for foreign key lookups
     Cached for 60 seconds to reduce database load
     """
-    limit = int(request.GET.get("limit", 100))
+    try:
+        limit = int(request.GET.get("limit", 100))
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid limit parameter. Must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+    
     telemetry = TelemetryData.objects.select_related('device').order_by("-timestamp")[:limit]
     return Response(TelemetryDataSerializer(telemetry, many=True).data)
 
@@ -647,9 +658,11 @@ def kpis(request: Any) -> Response:
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@ratelimit(key='ip', rate='5/m', block=True)
 def register_user(request):
     """
     Register a new user
+    Rate limited: 5 registration attempts per minute per IP
     """
     username = request.data.get('username')
     email = request.data.get('email')
@@ -1109,7 +1122,7 @@ def customers_list(request):
     from django.db.models import Q
     
     search = request.GET.get('search', '').strip()
-    customers = Customer.objects.all()
+    customers = Customer.objects.select_related('created_by', 'updated_by').all()
     
     if search:
         customers = customers.filter(
@@ -1220,7 +1233,7 @@ def delete_customer(request, customer_id):
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
 def presets_list(request):
-    configs = GatewayConfig.objects.all().order_by('-updated_at')
+    configs = GatewayConfig.objects.select_related('created_by', 'updated_by').all().order_by('-updated_at')
     data = []
     for config in configs:
         slaves = SlaveDevice.objects.filter(gateway_config=config).count()
@@ -1842,9 +1855,12 @@ def alerts_crud(request: Any) -> Response:
         device_serial = request.GET.get('device')
         severity = request.GET.get('severity')
         alert_status = request.GET.get('status')
-        limit = int(request.GET.get('limit', 100))
+        try:
+            limit = int(request.GET.get('limit', 100))
+        except (ValueError, TypeError):
+            return Response({"error": "Invalid limit parameter. Must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
         
-        queryset = Alert.objects.all()
+        queryset = Alert.objects.select_related('device', 'created_by', 'acknowledged_by', 'resolved_by').all()
         
         if device_serial:
             queryset = queryset.filter(device__device_serial=device_serial)

@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 
 
 class UserProfile(models.Model):
@@ -53,6 +54,24 @@ class Device(models.Model):
 
 
 class GatewayConfig(models.Model):
+	# Protocol Types
+	class ProtocolType(models.TextChoices):
+		RTU = 'RTU', 'Modbus RTU'
+		ASCII = 'ASCII', 'Modbus ASCII'
+		TCP = 'TCP', 'Modbus TCP'
+	
+	# Parity Options
+	class ParityType(models.TextChoices):
+		NONE = 'N', 'None'
+		EVEN = 'E', 'Even'
+		ODD = 'O', 'Odd'
+	
+	# Physical Interface Types
+	class InterfaceType(models.TextChoices):
+		RS485 = 'RS485', 'RS-485'
+		RS232 = 'RS232', 'RS-232' 
+		ETHERNET = 'ETH', 'Ethernet'
+	
 	config_id = models.CharField(max_length=64, unique=True)
 	name = models.CharField(max_length=100, blank=True, default='')
 	created_at = models.DateTimeField(default=timezone.now)
@@ -60,22 +79,49 @@ class GatewayConfig(models.Model):
 	updated_at = models.DateTimeField(auto_now=True)
 	updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='gateway_configs_updated')
 	config_schema_ver = models.PositiveIntegerField(default=1)
+	
+	# Communication Layer
+	protocol_type = models.CharField(max_length=10, choices=ProtocolType.choices, default=ProtocolType.RTU)
 	baud_rate = models.PositiveIntegerField(default=9600)
-	data_bits = models.PositiveSmallIntegerField(default=8)
-	stop_bits = models.PositiveSmallIntegerField(default=1)
-	parity = models.PositiveSmallIntegerField(default=0)  # 0=None,1=Odd,2=Even
+	parity = models.CharField(max_length=1, choices=ParityType.choices, default=ParityType.NONE)
+	data_bits = models.PositiveSmallIntegerField(default=8, choices=[(7, '7 bits'), (8, '8 bits')])
+	stop_bits = models.PositiveSmallIntegerField(default=1, choices=[(1, '1 bit'), (2, '2 bits')])
+	interface_type = models.CharField(max_length=10, choices=InterfaceType.choices, default=InterfaceType.RS485)
+	
+	# Timing Configuration
+	global_response_timeout_ms = models.PositiveIntegerField(default=1000, help_text='Default response timeout in ms')
+	inter_frame_delay_ms = models.PositiveIntegerField(default=50, help_text='Gap between frames in ms')
+	global_retry_count = models.PositiveSmallIntegerField(default=3, help_text='Default retry attempts')
+	global_retry_delay_ms = models.PositiveIntegerField(default=100, help_text='Wait between retries in ms')
+	global_poll_interval_ms = models.PositiveIntegerField(default=5000, help_text='Default polling interval in ms')
 
 	def __str__(self):
 		return self.name or self.config_id
 
 
 class SlaveDevice(models.Model):
+	# Priority Levels
+	class PriorityLevel(models.TextChoices):
+		HIGH = 'HIGH', 'High Priority'
+		NORMAL = 'NORMAL', 'Normal Priority'
+		LOW = 'LOW', 'Low Priority'
+	
 	gateway_config = models.ForeignKey(GatewayConfig, related_name="slaves", on_delete=models.CASCADE)
-	slave_id = models.PositiveSmallIntegerField()
+	slave_id = models.PositiveSmallIntegerField(validators=[models.validators.MinValueValidator(1), models.validators.MaxValueValidator(247)])
 	device_name = models.CharField(max_length=64)
-	polling_interval_ms = models.PositiveIntegerField(default=5000)
-	timeout_ms = models.PositiveIntegerField(default=1000)
+	device_type = models.CharField(max_length=64, blank=True, help_text='Device model for preset mappings')
 	enabled = models.BooleanField(default=True)
+	
+	# Timing Configuration
+	polling_interval_ms = models.PositiveIntegerField(default=5000)
+	response_timeout_ms = models.PositiveIntegerField(default=1000)
+	retry_count = models.PositiveSmallIntegerField(default=3)
+	retry_delay_ms = models.PositiveIntegerField(default=100)
+	priority = models.CharField(max_length=10, choices=PriorityLevel.choices, default=PriorityLevel.NORMAL)
+	
+	# Additional metadata
+	description = models.TextField(blank=True, help_text='Device description or notes')
+	preset = models.ForeignKey('DevicePreset', on_delete=models.SET_NULL, null=True, blank=True, help_text='Device preset template')
 
 	class Meta:
 		unique_together = ("gateway_config", "slave_id")
@@ -86,21 +132,179 @@ class SlaveDevice(models.Model):
 
 
 class RegisterMapping(models.Model):
+	# Register Types
+	class RegisterType(models.TextChoices):
+		COIL = 'COIL', 'Coil (0x)'
+		DISCRETE_INPUT = 'DISCRETE', 'Discrete Input (1x)'
+		INPUT_REGISTER = 'INPUT', 'Input Register (3x)'
+		HOLDING_REGISTER = 'HOLDING', 'Holding Register (4x)'
+	
+	# Data Types
+	class DataType(models.TextChoices):
+		INT16 = 'INT16', '16-bit Signed Integer'
+		UINT16 = 'UINT16', '16-bit Unsigned Integer'
+		INT32 = 'INT32', '32-bit Signed Integer'
+		UINT32 = 'UINT32', '32-bit Unsigned Integer'
+		FLOAT32 = 'FLOAT32', '32-bit Float'
+		FLOAT64 = 'FLOAT64', '64-bit Float'
+		STRING = 'STRING', 'ASCII String'
+		BOOL = 'BOOL', 'Boolean'
+	
+	# Byte Order (Endianness)
+	class ByteOrder(models.TextChoices):
+		BIG_ENDIAN = 'BE', 'Big Endian (AB)'
+		LITTLE_ENDIAN = 'LE', 'Little Endian (BA)'
+	
+	# Word Order for 32-bit values
+	class WordOrder(models.TextChoices):
+		BIG_ENDIAN = 'BE', 'Big Endian (AB CD)'
+		LITTLE_ENDIAN = 'LE', 'Little Endian (CD AB)'
+		MID_BIG_ENDIAN = 'MBE', 'Mid-Big Endian (BA DC)'
+		MID_LITTLE_ENDIAN = 'MLE', 'Mid-Little Endian (DC BA)'
+	
+	# Access Modes
+	class AccessMode(models.TextChoices):
+		READ_ONLY = 'R', 'Read Only'
+		READ_WRITE = 'RW', 'Read/Write'
+		WRITE_ONLY = 'W', 'Write Only'
+	
+	# Function Codes
+	FUNCTION_CODES = [
+		(1, 'Read Coils (0x01)'),
+		(2, 'Read Discrete Inputs (0x02)'),
+		(3, 'Read Holding Registers (0x03)'),
+		(4, 'Read Input Registers (0x04)'),
+		(5, 'Write Single Coil (0x05)'),
+		(6, 'Write Single Register (0x06)'),
+		(15, 'Write Multiple Coils (0x0F)'),
+		(16, 'Write Multiple Registers (0x10)'),
+	]
+	
 	slave = models.ForeignKey(SlaveDevice, related_name="registers", on_delete=models.CASCADE)
-	label = models.CharField(max_length=64)
+	name = models.CharField(max_length=64, help_text='Human-readable register name')
+	address = models.PositiveIntegerField(validators=[models.validators.MaxValueValidator(65535)])
+	register_type = models.CharField(max_length=10, choices=RegisterType.choices, default=RegisterType.HOLDING_REGISTER)
+	function_code = models.PositiveSmallIntegerField(choices=FUNCTION_CODES, default=3)
+	register_count = models.PositiveSmallIntegerField(default=1, validators=[models.validators.MaxValueValidator(125)])
+	enabled = models.BooleanField(default=True)
+	preset_register = models.ForeignKey('PresetRegister', on_delete=models.SET_NULL, null=True, blank=True, help_text='Linked preset register')
+	
+	# Data Interpretation
+	data_type = models.CharField(max_length=10, choices=DataType.choices, default=DataType.UINT16)
+	byte_order = models.CharField(max_length=10, choices=ByteOrder.choices, default=ByteOrder.BIG_ENDIAN)
+	word_order = models.CharField(max_length=10, choices=WordOrder.choices, default=WordOrder.BIG_ENDIAN, blank=True)
+	bit_position = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.validators.MaxValueValidator(15)], help_text='For single bit extraction (0-15)')
+	
+	# Value Transformation
+	scale_factor = models.FloatField(default=1.0, help_text='Multiply raw value by this')
+	offset = models.FloatField(default=0.0, help_text='Add this to scaled value')
+	formula = models.CharField(max_length=200, blank=True, help_text='Custom formula using x as variable')
+	decimal_places = models.PositiveSmallIntegerField(default=2, validators=[models.validators.MaxValueValidator(6)])
+	
+	# Metadata & Validation
+	unit = models.CharField(max_length=20, blank=True, help_text='Engineering unit (V, A, W, etc.)')
+	category = models.CharField(max_length=50, blank=True, help_text='Logical grouping')
+	min_value = models.FloatField(null=True, blank=True, help_text='Valid range minimum')
+	max_value = models.FloatField(null=True, blank=True, help_text='Valid range maximum')
+	dead_band = models.FloatField(null=True, blank=True, help_text='Minimum change to report')
+	access_mode = models.CharField(max_length=5, choices=AccessMode.choices, default=AccessMode.READ_ONLY)
+	
+	# Alarm Configuration
+	high_alarm_threshold = models.FloatField(null=True, blank=True)
+	low_alarm_threshold = models.FloatField(null=True, blank=True)
+	
+	# Value Mapping for Enums
+	value_mapping = models.JSONField(default=dict, blank=True, help_text='Map values to descriptions {"0": "Off", "1": "On"}')
+	
+	# String Configuration
+		string_length = models.PositiveSmallIntegerField(null=True, blank=True, help_text='For ASCII string registers')
+	
+		# Advanced
+		is_signed = models.BooleanField(default=True, help_text='For INT16 vs UINT16 interpretation')
+		description = models.TextField(blank=True, help_text='Register description')
+	
+		class Meta:
+			ordering = ["address"]
+			indexes = [
+				models.Index(fields=["slave", "address"]),
+				models.Index(fields=["enabled"]),
+			]
+	
+		def __str__(self):
+			return f"{self.slave.slave_id}:{self.name}@{self.address}"
+	
+		def clean(self):
+			if self.min_value is not None and self.max_value is not None:
+				if self.min_value >= self.max_value:
+					raise ValidationError('Minimum value must be less than maximum value')
+	
+
+# Device Preset System for Common Industrial Devices
+class DevicePreset(models.Model):
+	"""Predefined register mappings for common industrial devices"""
+	
+	class DeviceType(models.TextChoices):
+		SOLAR_INVERTER = 'SOLAR_INV', 'Solar Inverter'
+		ENERGY_METER = 'ENERGY_MTR', 'Energy Meter'
+		PLC = 'PLC', 'PLC Controller'
+		TEMPERATURE_SENSOR = 'TEMP_SENSOR', 'Temperature Sensor'
+		FREQUENCY_DRIVE = 'VFD', 'Variable Frequency Drive'
+		CUSTOM = 'CUSTOM', 'Custom Device'
+	
+	name = models.CharField(max_length=100, unique=True)  # e.g., "Solis S6 Inverter"
+	manufacturer = models.CharField(max_length=100, blank=True)
+	model = models.CharField(max_length=100, blank=True)
+	device_type = models.CharField(max_length=20, choices=DeviceType.choices)
+	description = models.TextField(blank=True)
+	version = models.CharField(max_length=20, default="1.0")
+	created_at = models.DateTimeField(default=timezone.now)
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+	is_active = models.BooleanField(default=True)
+	
+	# Default communication settings for this device type
+	default_baud_rate = models.PositiveIntegerField(default=9600)
+	default_parity = models.CharField(max_length=1, choices=GatewayConfig.ParityType.choices, default=GatewayConfig.ParityType.NONE)
+	default_data_bits = models.PositiveSmallIntegerField(default=8)
+	default_stop_bits = models.PositiveSmallIntegerField(default=1)
+	default_timeout_ms = models.PositiveIntegerField(default=1000)
+	default_poll_interval_ms = models.PositiveIntegerField(default=5000)
+	
+	class Meta:
+		ordering = ['manufacturer', 'model']
+	
+	def __str__(self):
+		return f"{self.manufacturer} {self.model}" if self.manufacturer else self.name
+
+
+class PresetRegister(models.Model):
+	"""Register definitions for device presets"""
+	preset = models.ForeignKey(DevicePreset, related_name="registers", on_delete=models.CASCADE)
+	name = models.CharField(max_length=64)
 	address = models.PositiveIntegerField()
-	num_registers = models.PositiveSmallIntegerField(default=1)
-	function_code = models.PositiveSmallIntegerField(default=3)
-	data_type = models.PositiveSmallIntegerField(default=0)  # see doc mapping
+	register_type = models.CharField(max_length=10, choices=RegisterMapping.RegisterType.choices)
+	function_code = models.PositiveSmallIntegerField(choices=RegisterMapping.FUNCTION_CODES, default=3)
+	register_count = models.PositiveSmallIntegerField(default=1)
+	data_type = models.CharField(max_length=10, choices=RegisterMapping.DataType.choices, default=RegisterMapping.DataType.UINT16)
+	byte_order = models.CharField(max_length=10, choices=RegisterMapping.ByteOrder.choices, default=RegisterMapping.ByteOrder.BIG_ENDIAN)
+	word_order = models.CharField(max_length=10, choices=RegisterMapping.WordOrder.choices, default=RegisterMapping.WordOrder.BIG_ENDIAN, blank=True)
 	scale_factor = models.FloatField(default=1.0)
 	offset = models.FloatField(default=0.0)
-	enabled = models.BooleanField(default=True)
-
+	unit = models.CharField(max_length=20, blank=True)
+	category = models.CharField(max_length=50, blank=True)
+	decimal_places = models.PositiveSmallIntegerField(default=2)
+	min_value = models.FloatField(null=True, blank=True)
+	max_value = models.FloatField(null=True, blank=True)
+	description = models.TextField(blank=True)
+	value_mapping = models.JSONField(default=dict, blank=True)
+	is_required = models.BooleanField(default=True, help_text='Essential register for this device type')
+	display_order = models.PositiveSmallIntegerField(default=100)
+	
 	class Meta:
-		ordering = ["address"]
-
+		ordering = ['display_order', 'category', 'name']
+		unique_together = ('preset', 'address')
+	
 	def __str__(self):
-		return f"{self.slave.slave_id}:{self.label}@{self.address}"
+		return f"{self.preset.name}: {self.name}"
 
 
 class TelemetryData(models.Model):

@@ -60,4 +60,27 @@ urlpatterns = [
 	path("alerts/<int:alert_id>/", views.alert_detail, name="alert_detail"),
 	path("alerts/<int:alert_id>/acknowledge/", views.alert_acknowledge, name="alert_acknowledge"),
 	path("alerts/<int:alert_id>/resolve/", views.alert_resolve, name="alert_resolve"),
+	
+	# Comprehensive Modbus Configuration API
+	# Device Preset Management
+	path("modbus/presets/", views.device_presets, name="device_presets"),
+	path("modbus/presets/<int:preset_id>/", views.device_preset_detail, name="device_preset_detail"),
+	path("modbus/presets/<int:preset_id>/registers/", views.preset_registers, name="preset_registers"),
+	path("modbus/presets/<int:preset_id>/registers/<int:register_id>/", views.preset_register_detail, name="preset_register_detail"),
+	
+	# Modbus Configuration Management (Web Interface)
+	path("modbus/configurations/summary/", views.modbus_configuration_summary, name="modbus_configuration_summary"),
+	path("modbus/configurations/<str:config_id>/", views.modbus_configuration_comprehensive, name="modbus_configuration_comprehensive"),
+	
+	# Slave Device Management
+	path("modbus/configurations/<str:config_id>/slaves/create/", views.create_slave_device, name="create_slave_device"),
+	path("modbus/configurations/<str:config_id>/slaves/<int:slave_id>/", views.slave_device_detail, name="slave_device_detail"),
+	path("modbus/configurations/<str:config_id>/slaves/<int:slave_id>/apply-preset/", views.apply_device_preset, name="apply_device_preset"),
+	
+	# Register Mapping Management 
+	path("modbus/configurations/<str:config_id>/slaves/<int:slave_id>/registers/create/", views.create_register_mapping, name="create_register_mapping"),
+	path("modbus/configurations/<str:config_id>/slaves/<int:slave_id>/registers/<int:register_id>/", views.register_mapping_detail, name="register_mapping_detail"),
+	
+	# Legacy Firmware Endpoints (backward compatibility)
+	path("devices/<str:config_id>/config-legacy", views.modbus_configuration_legacy, name="modbus_configuration_legacy"),
 ]

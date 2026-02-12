@@ -16,11 +16,21 @@ from decouple import config as env_config
 from .serializers import (
     ProvisionSerializer,
     GatewayConfigSerializer,
+    LegacyGatewayConfigSerializer,
     TelemetryIngestSerializer,
     TelemetryDataSerializer,
     DeviceSerializer,
+    DevicePresetSerializer,
+    PresetRegisterSerializer,
+    RegisterMappingSerializer,
+    SlaveDeviceSerializer,
+    AlertSerializer,
+    CustomerSerializer,
 )
-from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping, Customer
+from .models import (
+    Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, 
+    RegisterMapping, Customer, Alert, DevicePreset, PresetRegister
+)
 import logging
 import jwt
 import secrets
@@ -1927,3 +1937,396 @@ def alert_resolve(request: Any, alert_id: int) -> Response:
     alert.resolve(request.user)
     serializer = AlertSerializer(alert)
     return Response(serializer.data)
+
+
+# ============== COMPREHENSIVE MODBUS CONFIGURATION API ==============
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsStaffUser])
+def device_presets(request):
+    """
+    GET: List all device presets with filtering
+    POST: Create new device preset
+    """
+    if request.method == 'GET':
+        # Get query parameters for filtering
+        device_type = request.GET.get('device_type')
+        manufacturer = request.GET.get('manufacturer')
+        search = request.GET.get('search')
+        is_active = request.GET.get('is_active', 'true').lower() == 'true'
+        
+        # Build query
+        queryset = DevicePreset.objects.filter(is_active=is_active)
+        
+        if device_type:
+            queryset = queryset.filter(device_type=device_type)
+        
+        if manufacturer:
+            queryset = queryset.filter(manufacturer__icontains=manufacturer)
+        
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) |
+                Q(manufacturer__icontains=search) |
+                Q(model__icontains=search) |
+                Q(description__icontains=search)
+            )
+        
+        # Order by manufacturer and model
+        queryset = queryset.order_by('manufacturer', 'model')
+        
+        serializer = DevicePresetSerializer(queryset, many=True)
+        return Response({
+            'count': queryset.count(),
+            'results': serializer.data
+        })
+    
+    elif request.method == 'POST':
+        serializer = DevicePresetSerializer(data=request.data)
+        if serializer.is_valid():
+            preset = set_audit_fields(serializer.save(), request)
+            return Response(DevicePresetSerializer(preset).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsStaffUser])
+def device_preset_detail(request, preset_id):
+    """
+    GET: Get device preset details with all registers
+    PUT: Update device preset
+    DELETE: Delete device preset (soft delete by marking inactive)
+    """
+    try:
+        preset = DevicePreset.objects.get(id=preset_id)
+    except DevicePreset.DoesNotExist:
+        return Response({'error': 'Device preset not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        serializer = DevicePresetSerializer(preset)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = DevicePresetSerializer(preset, data=request.data, partial=True)
+        if serializer.is_valid():
+            preset = set_audit_fields(serializer.save(), request)
+            return Response(DevicePresetSerializer(preset).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == 'DELETE':
+        # Soft delete by marking inactive
+        preset.is_active = False
+        preset = set_audit_fields(preset, request)
+        preset.save()
+        return Response({'message': 'Device preset deactivated'}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsStaffUser])
+def preset_registers(request, preset_id):
+    """
+    GET: List all registers for a device preset
+    POST: Add new register to device preset
+    """
+    try:
+        preset = DevicePreset.objects.get(id=preset_id)
+    except DevicePreset.DoesNotExist:
+        return Response({'error': 'Device preset not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        registers = preset.registers.all()
+        category = request.GET.get('category')
+        if category:
+            registers = registers.filter(category__icontains=category)
+        
+        serializer = PresetRegisterSerializer(registers, many=True)
+        return Response({
+            'preset_name': preset.name,
+            'count': registers.count(),
+            'registers': serializer.data
+        })
+    
+    elif request.method == 'POST':
+        serializer = PresetRegisterSerializer(data=request.data)
+        if serializer.is_valid():
+            register = serializer.save(preset=preset)
+            return Response(PresetRegisterSerializer(register).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsStaffUser])
+def preset_register_detail(request, preset_id, register_id):
+    """
+    GET/PUT/DELETE individual preset register
+    """
+    try:
+        preset = DevicePreset.objects.get(id=preset_id)
+        register = preset.registers.get(id=register_id)
+    except (DevicePreset.DoesNotExist, PresetRegister.DoesNotExist):
+        return Response({'error': 'Register not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        serializer = PresetRegisterSerializer(register)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = PresetRegisterSerializer(register, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == 'DELETE':
+        register.delete()
+        return Response({'message': 'Register deleted'}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def apply_device_preset(request, config_id, slave_id):
+    """
+    Apply a device preset to an existing slave device.
+    Creates register mappings based on preset registers.
+    """
+    preset_id = request.data.get('preset_id')
+    overwrite = request.data.get('overwrite', False)  # Whether to overwrite existing registers
+    
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+        slave = config.slaves.get(slave_id=slave_id)
+        preset = DevicePreset.objects.get(id=preset_id)
+    except (GatewayConfig.DoesNotExist, SlaveDevice.DoesNotExist, DevicePreset.DoesNotExist):
+        return Response({'error': 'Configuration, slave, or preset not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # If overwrite is True, delete existing registers
+    if overwrite:
+        slave.registers.all().delete()
+    
+    # Apply communication settings from preset
+    config.baud_rate = preset.default_baud_rate
+    config.parity = preset.default_parity
+    config.data_bits = preset.default_data_bits
+    config.stop_bits = preset.default_stop_bits
+    config.global_response_timeout_ms = preset.default_timeout_ms
+    config.global_poll_interval_ms = preset.default_poll_interval_ms
+    config = set_audit_fields(config, request)
+    config.save()
+    
+    # Update slave with preset reference
+    slave.polling_interval_ms = preset.default_poll_interval_ms
+    slave.response_timeout_ms = preset.default_timeout_ms
+    slave.preset = preset
+    slave.device_type = f"{preset.manufacturer} {preset.model}"
+    slave.save()
+    
+    # Create register mappings from preset
+    created_registers = []
+    for preset_reg in preset.registers.all():
+        # Check if register already exists (by address)
+        if not overwrite and slave.registers.filter(address=preset_reg.address).exists():
+            continue
+        
+        register = RegisterMapping.objects.create(
+            slave=slave,
+            preset_register=preset_reg,
+            name=preset_reg.name,
+            address=preset_reg.address,
+            register_type=preset_reg.register_type,
+            function_code=preset_reg.function_code,
+            register_count=preset_reg.register_count,
+            data_type=preset_reg.data_type,
+            byte_order=preset_reg.byte_order,
+            word_order=preset_reg.word_order,
+            scale_factor=preset_reg.scale_factor,
+            offset=preset_reg.offset,
+            unit=preset_reg.unit,
+            category=preset_reg.category,
+            decimal_places=preset_reg.decimal_places,
+            min_value=preset_reg.min_value,
+            max_value=preset_reg.max_value,
+            description=preset_reg.description,
+            value_mapping=preset_reg.value_mapping,
+            enabled=True
+        )
+        created_registers.append(register)
+    
+    return Response({
+        'message': f'Applied preset "{preset.name}" to slave {slave_id}',
+        'preset_applied': preset.name,
+        'registers_created': len(created_registers),
+        'slave': SlaveDeviceSerializer(slave).data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def modbus_configuration_legacy(request, config_id):
+    """
+    Legacy endpoint for firmware compatibility.
+    Returns Modbus configuration in the format expected by existing firmware.
+    """
+    is_authenticated, error_msg = DeviceAuthentication.authenticate_device(request, config_id)
+    if not is_authenticated:
+        logger.warning(f"Device auth failed for config {config_id}: {error_msg}")
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    try:
+        config = GatewayConfig.objects.prefetch_related(
+            'slaves__registers'
+        ).get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        logger.error(f"Configuration not found: {config_id}")
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Use legacy serializer for firmware compatibility
+    serializer = LegacyGatewayConfigSerializer(config)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def modbus_configuration_comprehensive(request, config_id):
+    """
+    Comprehensive Modbus configuration endpoint for web interface.
+    Returns full configuration with all parameters.
+    """
+    try:
+        config = GatewayConfig.objects.prefetch_related(
+            'slaves__registers__preset_register',
+            'slaves__preset'
+        ).get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = GatewayConfigSerializer(config)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def create_slave_device(request, config_id):
+    """
+    Create a new slave device for a configuration
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = SlaveDeviceSerializer(data=request.data)
+    if serializer.is_valid():
+        slave = serializer.save(gateway_config=config)
+        return Response(SlaveDeviceSerializer(slave).data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsStaffUser])
+def slave_device_detail(request, config_id, slave_id):
+    """
+    GET/PUT/DELETE individual slave device
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+        slave = config.slaves.get(slave_id=slave_id)
+    except (GatewayConfig.DoesNotExist, SlaveDevice.DoesNotExist):
+        return Response({'error': 'Configuration or slave not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        serializer = SlaveDeviceSerializer(slave)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = SlaveDeviceSerializer(slave, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == 'DELETE':
+        slave.delete()
+        return Response({'message': 'Slave device deleted'}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def create_register_mapping(request, config_id, slave_id):
+    """
+    Create a new register mapping for a slave device
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+        slave = config.slaves.get(slave_id=slave_id)
+    except (GatewayConfig.DoesNotExist, SlaveDevice.DoesNotExist):
+        return Response({'error': 'Configuration or slave not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = RegisterMappingSerializer(data=request.data)
+    if serializer.is_valid():
+        register = serializer.save(slave=slave)
+        return Response(RegisterMappingSerializer(register).data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsStaffUser])
+def register_mapping_detail(request, config_id, slave_id, register_id):
+    """
+    GET/PUT/DELETE individual register mapping
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+        slave = config.slaves.get(slave_id=slave_id)
+        register = slave.registers.get(id=register_id)
+    except (GatewayConfig.DoesNotExist, SlaveDevice.DoesNotExist, RegisterMapping.DoesNotExist):
+        return Response({'error': 'Configuration, slave, or register not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == 'GET':
+        serializer = RegisterMappingSerializer(register)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = RegisterMappingSerializer(register, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == 'DELETE':
+        register.delete()
+        return Response({'message': 'Register mapping deleted'}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def modbus_configuration_summary(request):
+    """
+    Get summary of all Modbus configurations
+    """
+    configs = GatewayConfig.objects.prefetch_related('slaves__registers').all()
+    
+    summary = []
+    for config in configs:
+        total_slaves = config.slaves.filter(enabled=True).count()
+        total_registers = sum(slave.registers.filter(enabled=True).count() for slave in config.slaves.filter(enabled=True))
+        
+        summary.append({
+            'config_id': config.config_id,
+            'name': config.name,
+            'protocol_type': config.protocol_type,
+            'baud_rate': config.baud_rate,
+            'updated_at': config.updated_at,
+            'slave_count': total_slaves,
+            'register_count': total_registers,
+            'slaves': [{
+                'slave_id': slave.slave_id,
+                'device_name': slave.device_name,
+                'enabled': slave.enabled,
+                'register_count': slave.registers.filter(enabled=True).count()
+            } for slave in config.slaves.all()]
+        })
+    
+    return Response({
+        'count': len(summary),
+        'configurations': summary
+    })

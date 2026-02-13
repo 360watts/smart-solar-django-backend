@@ -136,3 +136,23 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+# Local development files
+local_running_procedures.txt
+mosquitto*.conf
+start-mosquitto.bat
+*.bat
+
+# Node.js (shouldn't be in Django project)
+package-lock.json
+node_modules/
+
+# Test and debug scripts
+test_*.py
+check_*.py
+direct_device_check.py
+show_device_types.py
+add_indexes.py
+
+# Build artifacts
+build/
+staticfiles/

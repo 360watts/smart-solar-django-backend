@@ -16,12 +16,9 @@ from decouple import config as env_config
 from .serializers import (
     ProvisionSerializer,
     GatewayConfigSerializer,
-    LegacyGatewayConfigSerializer,
     TelemetryIngestSerializer,
     TelemetryDataSerializer,
     DeviceSerializer,
-    DevicePresetSerializer,
-    PresetRegisterSerializer,
     RegisterMappingSerializer,
     SlaveDeviceSerializer,
     AlertSerializer,
@@ -29,7 +26,7 @@ from .serializers import (
 )
 from .models import (
     Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, 
-    RegisterMapping, Customer, Alert, DevicePreset, PresetRegister
+    RegisterMapping, Customer, Alert
 )
 import logging
 import jwt
@@ -422,8 +419,8 @@ def devices_list(request: Any) -> Response:
     page = int(request.GET.get('page', 1))
     page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
     
-    # Optimize query: only fetch related data we need (including audit fields)
-    devices = Device.objects.select_related('customer', 'user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
+    # Optimize query: only fetch related data we need (including audit fields and gateway_config)
+    devices = Device.objects.select_related('customer', 'user', 'created_by', 'updated_by', 'gateway_config').all().order_by("-provisioned_at")
     
     # Apply search filter
     if search:
@@ -458,6 +455,10 @@ def devices_list(request: Any) -> Response:
                 "name": f"{device.customer.first_name} {device.customer.last_name}",
                 "email": device.customer.email,
             } if device.customer else None,
+            # Gateway Config / Preset fields
+            "gateway_config_id": device.gateway_config.id if device.gateway_config else None,
+            "gateway_config_name": device.gateway_config.name if device.gateway_config else None,
+            "gateway_config_description": f"Baud: {device.gateway_config.baud_rate}, Slaves: {device.gateway_config.slaves.count()}" if device.gateway_config else None,
             # Audit trail fields
             "created_by_username": device.created_by.username if device.created_by else None,
             "created_at": device.provisioned_at.isoformat(),  # Use provisioned_at as created_at
@@ -803,11 +804,24 @@ def get_current_user(request):
 @permission_classes([IsStaffUser])
 def users_list(request):
     """
-    List all users with profiles, with optional search
+    List users with profiles, with optional search and filtering
     Requires staff authentication
+    - Returns only USER type users by default (device owners)
+    - Can filter by user_type: ?user_type=ADMIN, ?user_type=USER, ?user_type=MASTER
+    - Masters can see all users by passing ?show_all=true
     """
     search = request.GET.get('search', '').strip()
+    show_all = request.GET.get('show_all', 'false').lower() == 'true'
+    user_type = request.GET.get('user_type', '').strip().upper()
+    
     users = User.objects.all().select_related('userprofile')
+    
+    # Filter by user_type if specified
+    if user_type in ['MASTER', 'ADMIN', 'USER']:
+        users = users.filter(userprofile__user_type=user_type)
+    # Otherwise filter to show only USER type by default (device owners for Android app)
+    elif not show_all or not request.user.is_superuser:
+        users = users.filter(userprofile__user_type='USER')
     
     if search:
         users = users.filter(
@@ -830,8 +844,50 @@ def users_list(request):
             'last_name': user.last_name,
             'mobile_number': profile.mobile_number if profile else None,
             'address': profile.address if profile else None,
+            'user_type': profile.user_type if profile else 'USER',
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
+            'date_joined': user.date_joined.isoformat(),
+        })
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def device_owners_list(request):
+    """
+    List only USER type users (device owners) for device registration
+    Requires staff authentication
+    These are the users who will use the Android mobile application
+    """
+    search = request.GET.get('search', '').strip()
+    
+    users = User.objects.filter(
+        userprofile__user_type='USER'
+    ).select_related('userprofile')
+    
+    if search:
+        users = users.filter(
+            Q(username__icontains=search) |
+            Q(email__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search) |
+            Q(userprofile__mobile_number__icontains=search) |
+            Q(userprofile__address__icontains=search)
+        )
+    
+    data = []
+    for user in users:
+        profile = getattr(user, 'userprofile', None)
+        data.append({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'mobile_number': profile.mobile_number if profile else None,
+            'address': profile.address if profile else None,
+            'user_type': profile.user_type if profile else 'USER',
             'date_joined': user.date_joined.isoformat(),
         })
     return Response(data)
@@ -842,15 +898,18 @@ def users_list(request):
 def create_user(request):
     """
     Create a new user (staff only)
-    Only superusers can create staff users
+    - Only MASTER and ADMIN can create users
+    - User type is automatically set based on is_staff and is_superuser
+    - Masters can create other admins, admins can only create regular users
     """
-    # Check if trying to create staff user
+    # Check permissions
     is_staff = request.data.get('is_staff', False)
     if is_staff and not request.user.is_superuser:
         return Response(
-            {'error': 'Only superusers can create staff users'},
+            {'error': 'Only masters can create admin users'},
             status=status.HTTP_403_FORBIDDEN
         )
+    
     username = request.data.get('username')
     email = request.data.get('email')
     password = request.data.get('password')
@@ -858,7 +917,6 @@ def create_user(request):
     last_name = request.data.get('last_name', '')
     mobile_number = request.data.get('mobile_number', '')
     address = request.data.get('address', '')
-    is_staff = request.data.get('is_staff', False)  # Get is_staff from request, default to False
 
     if not username or not email or not password:
         return Response(
@@ -887,16 +945,17 @@ def create_user(request):
             last_name=last_name
         )
         
-        # Set is_staff based on request
+        # Set is_staff based on request (only superusers can set this)
         user.is_staff = is_staff
         user.save()
 
-        # Create profile
-        UserProfile.objects.create(
-            user=user,
-            mobile_number=mobile_number,
-            address=address
-        )
+        # UserProfile is auto-created by signal with appropriate user_type
+        # Get the profile to return user_type
+        profile = user.userprofile
+        if profile:
+            profile.mobile_number = mobile_number
+            profile.address = address
+            profile.save()
 
         return Response({
             'id': user.id,
@@ -906,15 +965,14 @@ def create_user(request):
             'last_name': user.last_name,
             'mobile_number': mobile_number,
             'address': address,
+            'user_type': profile.user_type if profile else 'USER',
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
-            'date_joined': user.date_joined.isoformat(),
         }, status=status.HTTP_201_CREATED)
-
     except Exception as e:
         return Response(
             {'error': str(e)},
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 
@@ -1233,7 +1291,7 @@ def presets_list(request):
     configs = GatewayConfig.objects.all().order_by('-updated_at')
     data = []
     for config in configs:
-        slaves = SlaveDevice.objects.filter(gateway_config=config).count()
+        slaves = config.slaves.count()  # M2M relationship
 
         # Format parity for display
         parity_display = {0: 'None', 1: 'Odd', 2: 'Even'}.get(config.parity, 'Unknown')
@@ -1331,7 +1389,7 @@ def update_preset(request, preset_id):
     config.parity = request.data.get('parity', config.parity)
     config.save()
 
-    slaves = SlaveDevice.objects.filter(gateway_config=config).count()
+    slaves = config.slaves.count()  # M2M relationship
 
     # Format parity for display
     parity_display = {0: 'None', 1: 'Odd', 2: 'Even'}.get(config.parity, 'Unknown')
@@ -1597,54 +1655,61 @@ def delete_devices_bulk(request):
 
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
-def slaves_list(request, config_id):
+def global_slaves_list(request):
     """
-    Get all slaves for a gateway configuration
-    Requires staff authentication
+    Get all global slaves.
+    Used by Configuration page to manage slave devices.
     """
     try:
-        config = GatewayConfig.objects.get(config_id=config_id)
-    except GatewayConfig.DoesNotExist:
-        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    slaves = SlaveDevice.objects.filter(gateway_config=config).prefetch_related('registers')
-    data = []
-    for slave in slaves:
-        registers = RegisterMapping.objects.filter(slave=slave)
-        data.append({
-            'id': slave.id,
-            'slave_id': slave.slave_id,
-            'device_name': slave.device_name,
-            'polling_interval_ms': slave.polling_interval_ms,
-            'timeout_ms': slave.timeout_ms,
-            'enabled': slave.enabled,
-            'registers': [{
-                'id': reg.id,
-                'label': reg.label,
-                'address': reg.address,
-                'num_registers': reg.num_registers,
-                'function_code': reg.function_code,
-                'data_type': reg.data_type,
-                'scale_factor': reg.scale_factor,
-                'offset': reg.offset,
-                'enabled': reg.enabled,
-            } for reg in registers]
+        slaves = SlaveDevice.objects.all().prefetch_related('registers')
+        
+        data = []
+        for slave in slaves:
+            registers = slave.registers.all()
+            preset_names = list(slave.presets.values_list('name', flat=True))
+            data.append({
+                'id': slave.id,
+                'slaveId': slave.slave_id,
+                'deviceName': slave.device_name,
+                'pollingIntervalMs': slave.polling_interval_ms,
+                'timeoutMs': slave.timeout_ms,
+                'enabled': slave.enabled,
+                'registersCount': registers.count(),
+                'presetCount': slave.presets.count(),
+                'presetNames': preset_names,
+                'registers': [{
+                    'id': reg.id,
+                    'label': reg.label,
+                    'address': reg.address,
+                    'numRegisters': reg.num_registers,
+                    'functionCode': reg.function_code,
+                    'dataType': reg.data_type,
+                    'scaleFactor': reg.scale_factor,
+                    'offset': reg.offset,
+                    'enabled': reg.enabled,
+                } for reg in registers]
+            })
+        
+        return Response({
+            'slaves': data,
+            'total': len(data)
         })
-    return Response(data)
+        
+    except Exception as e:
+        logger.error(f"Error fetching global slaves: {str(e)}")
+        return Response(
+            {'error': f'Failed to fetch global slaves: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(['POST'])
 @permission_classes([IsStaffUser])
-def create_slave(request, config_id):
+def create_global_slave(request):
     """
-    Create a new slave device for a gateway configuration
-    Requires staff authentication
+    Create a new global slave device.
+    Used by Configuration page.
     """
-    try:
-        config = GatewayConfig.objects.get(config_id=config_id)
-    except GatewayConfig.DoesNotExist:
-        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
-
     slave_id = request.data.get('slave_id')
     device_name = request.data.get('device_name')
     polling_interval_ms = request.data.get('polling_interval_ms', 5000)
@@ -1655,13 +1720,8 @@ def create_slave(request, config_id):
     if not slave_id or not device_name:
         return Response({'error': 'slave_id and device_name are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Check if slave_id already exists for this config
-    if SlaveDevice.objects.filter(gateway_config=config, slave_id=slave_id).exists():
-        return Response({'error': 'Slave ID already exists for this configuration'}, status=status.HTTP_400_BAD_REQUEST)
-
     try:
         slave = SlaveDevice.objects.create(
-            gateway_config=config,
             slave_id=slave_id,
             device_name=device_name,
             polling_interval_ms=polling_interval_ms,
@@ -1697,10 +1757,10 @@ def create_slave(request, config_id):
 
         return Response({
             'id': slave.id,
-            'slave_id': slave.slave_id,
-            'device_name': slave.device_name,
-            'polling_interval_ms': slave.polling_interval_ms,
-            'timeout_ms': slave.timeout_ms,
+            'slaveId': slave.slave_id,
+            'deviceName': slave.device_name,
+            'pollingIntervalMs': slave.polling_interval_ms,
+            'timeoutMs': slave.timeout_ms,
             'enabled': slave.enabled,
             'registers': registers
         }, status=status.HTTP_201_CREATED)
@@ -1711,26 +1771,25 @@ def create_slave(request, config_id):
 
 @api_view(['PUT'])
 @permission_classes([IsStaffUser])
-def update_slave(request, config_id, slave_id):
+def update_global_slave(request, slave_pk):
     """
-    Update a slave device
-    Requires staff authentication
+    Update a global slave device by primary key.
+    Used by Configuration page.
     """
     try:
-        config = GatewayConfig.objects.get(config_id=config_id)
-        slave = SlaveDevice.objects.get(gateway_config=config, slave_id=slave_id)
-    except GatewayConfig.DoesNotExist:
-        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+        slave = SlaveDevice.objects.get(pk=slave_pk)
     except SlaveDevice.DoesNotExist:
         return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
 
     device_name = request.data.get('device_name', slave.device_name)
+    slave_id = request.data.get('slave_id', slave.slave_id)
     polling_interval_ms = request.data.get('polling_interval_ms', slave.polling_interval_ms)
     timeout_ms = request.data.get('timeout_ms', slave.timeout_ms)
     enabled = request.data.get('enabled', slave.enabled)
     registers_data = request.data.get('registers', [])
 
     slave.device_name = device_name
+    slave.slave_id = slave_id
     slave.polling_interval_ms = polling_interval_ms
     slave.timeout_ms = timeout_ms
     slave.enabled = enabled
@@ -1765,10 +1824,10 @@ def update_slave(request, config_id, slave_id):
 
     return Response({
         'id': slave.id,
-        'slave_id': slave.slave_id,
-        'device_name': slave.device_name,
-        'polling_interval_ms': slave.polling_interval_ms,
-        'timeout_ms': slave.timeout_ms,
+        'slaveId': slave.slave_id,
+        'deviceName': slave.device_name,
+        'pollingIntervalMs': slave.polling_interval_ms,
+        'timeoutMs': slave.timeout_ms,
         'enabled': slave.enabled,
         'registers': registers
     })
@@ -1776,21 +1835,155 @@ def update_slave(request, config_id, slave_id):
 
 @api_view(['DELETE'])
 @permission_classes([IsStaffUser])
-def delete_slave(request, config_id, slave_id):
+def delete_global_slave(request, slave_pk):
     """
-    Delete a slave device
-    Requires staff authentication
+    Delete a global slave device by primary key.
+    Note: This will remove the slave from all presets that use it.
+    Used by Configuration page.
     """
     try:
-        config = GatewayConfig.objects.get(config_id=config_id)
-        slave = SlaveDevice.objects.get(gateway_config=config, slave_id=slave_id)
-    except GatewayConfig.DoesNotExist:
-        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+        slave = SlaveDevice.objects.get(pk=slave_pk)
     except SlaveDevice.DoesNotExist:
         return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    preset_count = slave.presets.count()
     slave.delete()
-    return Response({'message': 'Slave deleted successfully'})
+    return Response({
+        'message': 'Slave deleted successfully',
+        'removedFromPresets': preset_count
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def add_slaves_to_preset(request, config_id):
+    """
+    Add slaves to a preset (M2M relationship).
+    Used by Device Presets page.
+    """
+    try:
+        preset = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Preset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave_ids = request.data.get('slave_ids', [])
+    if not slave_ids:
+        return Response({'error': 'slave_ids array is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        slaves = SlaveDevice.objects.filter(id__in=slave_ids)
+        preset.slaves.add(*slaves)
+        
+        return Response({
+            'message': f'Added {slaves.count()} slave(s) to preset',
+            'preset_id': preset.config_id,
+            'preset_name': preset.name,
+            'total_slaves': preset.slaves.count()
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def remove_slaves_from_preset(request, config_id):
+    """
+    Remove slaves from a preset (M2M relationship).
+    Used by Device Presets page.
+    """
+    try:
+        preset = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Preset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave_ids = request.data.get('slave_ids', [])
+    if not slave_ids:
+        return Response({'error': 'slave_ids array is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        slaves = SlaveDevice.objects.filter(id__in=slave_ids)
+        preset.slaves.remove(*slaves)
+        
+        return Response({
+            'message': f'Removed {slaves.count()} slave(s) from preset',
+            'preset_id': preset.config_id,
+            'preset_name': preset.name,
+            'total_slaves': preset.slaves.count()
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def preset_slaves_list(request, config_id):
+    """
+    Get all slaves associated with a preset.
+    Used by Device Presets page.
+    """
+    try:
+        preset = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Preset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slaves = preset.slaves.all().prefetch_related('registers')
+    data = []
+    for slave in slaves:
+        registers = slave.registers.all()
+        data.append({
+            'id': slave.id,
+            'slaveId': slave.slave_id,
+            'deviceName': slave.device_name,
+            'pollingIntervalMs': slave.polling_interval_ms,
+            'timeoutMs': slave.timeout_ms,
+            'enabled': slave.enabled,
+            'registers': [{
+                'id': reg.id,
+                'label': reg.label,
+                'address': reg.address,
+                'numRegisters': reg.num_registers,
+                'functionCode': reg.function_code,
+                'dataType': reg.data_type,
+                'scaleFactor': reg.scale_factor,
+                'offset': reg.offset,
+                'enabled': reg.enabled,
+            } for reg in registers]
+        })
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def device_presets_for_assignment(request):
+    """
+    Get unassigned device presets (GatewayConfig) available for device assignment.
+    Returns simplified preset data for device creation/editing forms.
+    """
+    try:
+        presets = GatewayConfig.objects.all().order_by('name')
+        
+        data = []
+        for preset in presets:
+            slaves_count = preset.slaves.count()
+            data.append({
+                'id': preset.id,
+                'config_id': preset.config_id,
+                'name': preset.name or preset.config_id,
+                'description': f"Baud: {preset.baud_rate}, Data: {preset.data_bits}, Stop: {preset.stop_bits}, Parity: {['None', 'Odd', 'Even'][preset.parity]}, Slaves: {slaves_count}",
+                'slaves_count': slaves_count,
+                'baud_rate': preset.baud_rate,
+                'devices_count': preset.devices.count(),  # Number of devices using this preset
+            })
+        
+        return Response(data)
+        
+    except Exception as e:
+        logger.error(f"Error fetching presets for device assignment: {str(e)}")
+        return Response(
+            {'error': f'Failed to fetch presets: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
 
 
 # ============== Health Check Endpoint ==============
@@ -2207,18 +2400,55 @@ def modbus_configuration_comprehensive(request, config_id):
 @permission_classes([IsStaffUser])
 def create_slave_device(request, config_id):
     """
-    Create a new slave device for a configuration
+    Create a new slave device and add it to a configuration's preset.
+    With M2M architecture, this creates a global slave and links it to the preset.
     """
     try:
         config = GatewayConfig.objects.get(config_id=config_id)
     except GatewayConfig.DoesNotExist:
         return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
     
-    serializer = SlaveDeviceSerializer(data=request.data)
-    if serializer.is_valid():
-        slave = serializer.save(gateway_config=config)
+    # Extract slave data
+    slave_id = request.data.get('slaveId') or request.data.get('slave_id')
+    device_name = request.data.get('deviceName') or request.data.get('device_name')
+    polling_interval_ms = request.data.get('pollingIntervalMs') or request.data.get('polling_interval_ms', 5000)
+    timeout_ms = request.data.get('timeoutMs') or request.data.get('timeout_ms', 1000)
+    enabled = request.data.get('enabled', True)
+    registers_data = request.data.get('registers', [])
+    
+    if not slave_id or not device_name:
+        return Response({'error': 'slaveId and deviceName are required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        # Create the global slave
+        slave = SlaveDevice.objects.create(
+            slave_id=slave_id,
+            device_name=device_name,
+            polling_interval_ms=polling_interval_ms,
+            timeout_ms=timeout_ms,
+            enabled=enabled
+        )
+        
+        # Create register mappings
+        for reg_data in registers_data:
+            RegisterMapping.objects.create(
+                slave=slave,
+                label=reg_data.get('label', ''),
+                address=reg_data.get('address', 0),
+                num_registers=reg_data.get('numRegisters') or reg_data.get('num_registers', 1),
+                function_code=reg_data.get('functionCode') or reg_data.get('function_code', 3),
+                data_type=reg_data.get('dataType') or reg_data.get('data_type', 0),
+                scale_factor=reg_data.get('scaleFactor') or reg_data.get('scale_factor', 1.0),
+                offset=reg_data.get('offset', 0.0),
+                enabled=reg_data.get('enabled', True)
+            )
+        
+        # Add the slave to the preset's M2M relationship
+        config.slaves.add(slave)
+        
         return Response(SlaveDeviceSerializer(slave).data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET', 'PUT', 'DELETE'])

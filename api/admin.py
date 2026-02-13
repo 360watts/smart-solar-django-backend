@@ -81,23 +81,27 @@ class RegisterMappingInline(admin.TabularInline):
 	extra = 0
 
 
-class SlaveDeviceInline(admin.TabularInline):
-	model = SlaveDevice
-	extra = 0
-
-
 @admin.register(GatewayConfig)
 class GatewayConfigAdmin(admin.ModelAdmin):
-	list_display = ("config_id", "updated_at", "baud_rate", "parity")
-	inlines = [SlaveDeviceInline]
-	search_fields = ("config_id",)
+	list_display = ("config_id", "name", "updated_at", "baud_rate", "parity", "slave_count")
+	filter_horizontal = ("slaves",)  # M2M widget for selecting slaves
+	search_fields = ("config_id", "name")
+	
+	def slave_count(self, obj):
+		return obj.slaves.count()
+	slave_count.short_description = "Slaves"
 
 
 @admin.register(SlaveDevice)
 class SlaveDeviceAdmin(admin.ModelAdmin):
-	list_display = ("gateway_config", "slave_id", "device_name", "enabled")
+	list_display = ("slave_id", "device_name", "polling_interval_ms", "timeout_ms", "enabled", "preset_count")
 	inlines = [RegisterMappingInline]
-	list_filter = ("gateway_config", "enabled")
+	list_filter = ("enabled",)
+	search_fields = ("device_name",)
+	
+	def preset_count(self, obj):
+		return obj.presets.count()
+	preset_count.short_description = "Used in Presets"
 
 
 @admin.register(TelemetryData)

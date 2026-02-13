@@ -78,6 +78,13 @@ class CustomerSerializer(serializers.ModelSerializer):
 class DeviceSerializer(serializers.ModelSerializer):
     customer_name = serializers.SerializerMethodField()
     customer_id = serializers.CharField(source='customer.customer_id', read_only=True)
+    # Gateway Config / Preset fields
+    gateway_config_id = serializers.PrimaryKeyRelatedField(
+        source='gateway_config', queryset=GatewayConfig.objects.all(), 
+        required=False, allow_null=True
+    )
+    gateway_config_name = serializers.CharField(source='gateway_config.name', read_only=True)
+    gateway_config_description = serializers.SerializerMethodField()
     # User field - writable for backwards compatibility with legacy frontend
     user = serializers.CharField(write_only=False, required=False, allow_blank=True)
     # Audit trail fields
@@ -88,12 +95,18 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version',
+        fields = ['id', 'device_serial', 'mac_address', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version',
+                  'gateway_config_id', 'gateway_config_name', 'gateway_config_description',
                   'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
         read_only_fields = ['id', 'provisioned_at', 'customer_id', 'customer_name']
     
     def get_customer_name(self, obj):
         return f"{obj.customer.first_name} {obj.customer.last_name}"
+    
+    def get_gateway_config_description(self, obj):
+        if obj.gateway_config:
+            return f"Baud: {obj.gateway_config.baud_rate}, Slaves: {obj.gateway_config.slaves.count()}"
+        return None
     
     def get_created_by_username(self, obj):
         try:
@@ -152,8 +165,9 @@ class DeviceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"User '{value}' does not exist")
 
     def create(self, validated_data):
-        # Extract user if provided
+        # Extract user and gateway_config if provided
         user = validated_data.pop('user', None)
+        gateway_config = validated_data.pop('gateway_config', None)
         
         # Handle customer assignment if provided
         customer_id = self.context.get('customer_id')
@@ -177,6 +191,10 @@ class DeviceSerializer(serializers.ModelSerializer):
                 }
             )
             validated_data['customer'] = default_customer
+        
+        # Add gateway_config if provided
+        if gateway_config:
+            validated_data['gateway_config'] = gateway_config
         
         instance = super().create(validated_data)
         
@@ -235,6 +253,7 @@ class SlaveDeviceSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = SlaveDevice
 		fields = [
+			"id",
 			"slaveId",
 			"deviceName",
 			"pollingIntervalMs",
@@ -251,7 +270,7 @@ class SlaveDeviceSerializer(serializers.ModelSerializer):
 
 class GatewayConfigSerializer(serializers.ModelSerializer):
 	uartConfig = serializers.SerializerMethodField()
-	slaves = SlaveDeviceSerializer(many=True)
+	slaves = SlaveDeviceSerializer(many=True, read_only=True)
 
 	class Meta:
 		model = GatewayConfig
@@ -274,6 +293,75 @@ class GatewayConfigSerializer(serializers.ModelSerializer):
 			"stopBits": obj.stop_bits,
 			"parity": obj.parity,
 		}
+
+
+class PresetListSerializer(serializers.ModelSerializer):
+	"""Serializer for listing presets in Device Presets page"""
+	slave_count = serializers.SerializerMethodField()
+	slave_ids = serializers.SerializerMethodField()
+	slaves = SlaveDeviceSerializer(many=True, read_only=True)
+
+	class Meta:
+		model = GatewayConfig
+		fields = [
+			"id",
+			"config_id",
+			"name",
+			"baud_rate",
+			"data_bits",
+			"stop_bits",
+			"parity",
+			"slave_count",
+			"slave_ids",
+			"slaves",
+			"created_at",
+			"updated_at",
+		]
+	
+	def get_slave_count(self, obj):
+		return obj.slaves.count()
+	
+	def get_slave_ids(self, obj):
+		return list(obj.slaves.values_list('id', flat=True))
+
+
+class PresetWriteSerializer(serializers.ModelSerializer):
+	"""Serializer for creating/updating presets"""
+	slave_ids = serializers.ListField(
+		child=serializers.IntegerField(),
+		required=False,
+		write_only=True
+	)
+
+	class Meta:
+		model = GatewayConfig
+		fields = [
+			"id",
+			"config_id",
+			"name",
+			"baud_rate",
+			"data_bits",
+			"stop_bits",
+			"parity",
+			"slave_ids",
+		]
+		read_only_fields = ["id"]
+	
+	def create(self, validated_data):
+		slave_ids = validated_data.pop('slave_ids', [])
+		preset = super().create(validated_data)
+		if slave_ids:
+			slaves = SlaveDevice.objects.filter(id__in=slave_ids)
+			preset.slaves.set(slaves)
+		return preset
+	
+	def update(self, instance, validated_data):
+		slave_ids = validated_data.pop('slave_ids', None)
+		instance = super().update(instance, validated_data)
+		if slave_ids is not None:
+			slaves = SlaveDevice.objects.filter(id__in=slave_ids)
+			instance.slaves.set(slaves)
+		return instance
 
 
 class ProvisionSerializer(serializers.Serializer):

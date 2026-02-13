@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("api", "0007_comprehensive_modbus_config"),
+        ("api", "0006_add_audit_fields"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -135,16 +135,6 @@ class Migration(migrations.Migration):
                 "verbose_name_plural": "OTA Updates",
                 "ordering": ["-created_at"],
             },
-        ),
-        migrations.RenameIndex(
-            model_name="registermapping",
-            new_name="api_registe_slave_i_584373_idx",
-            old_name="api_registermapping_slave_addr_idx",
-        ),
-        migrations.RenameIndex(
-            model_name="registermapping",
-            new_name="api_registe_enabled_1208aa_idx",
-            old_name="api_registermapping_enabled_idx",
         ),
         migrations.AddField(
             model_name="device",

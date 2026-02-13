@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, include
 from . import views
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -22,6 +22,7 @@ urlpatterns = [
 	path("auth/user/", views.get_current_user, name="get_current_user"),
 	path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 	path("users/", views.users_list, name="users_list"),
+	path("users/device-owners/", views.device_owners_list, name="device_owners_list"),
 	path("users/create/", views.create_user, name="create_user"),
 	path("users/<int:user_id>/", views.update_user, name="update_user"),
 	path("users/<int:user_id>/delete/", views.delete_user, name="delete_user"),
@@ -47,10 +48,18 @@ urlpatterns = [
 	path("devices/<int:device_id>/", views.update_device, name="update_device"),
 	path("devices/<int:device_id>/delete/", views.delete_device, name="delete_device"),
 	path("devices/delete-bulk/", views.delete_devices_bulk, name="delete_devices_bulk"),
-	path("presets/<str:config_id>/slaves/", views.slaves_list, name="slaves_list"),
-	path("presets/<str:config_id>/slaves/create/", views.create_slave, name="create_slave"),
-	path("presets/<str:config_id>/slaves/<int:slave_id>/", views.update_slave, name="update_slave"),
-	path("presets/<str:config_id>/slaves/<int:slave_id>/delete/", views.delete_slave, name="delete_slave"),
+	path("devices/presets-for-assignment/", views.device_presets_for_assignment, name="device_presets_for_assignment"),
+	
+	# Global slaves - Independent slave configuration (Configuration page)
+	path("slaves/", views.global_slaves_list, name="global_slaves_list"),
+	path("slaves/create/", views.create_global_slave, name="create_global_slave"),
+	path("slaves/<int:slave_pk>/", views.update_global_slave, name="update_global_slave"),
+	path("slaves/<int:slave_pk>/delete/", views.delete_global_slave, name="delete_global_slave"),
+	
+	# Preset slaves - M2M relationship management (Device Presets page)
+	path("presets/<str:config_id>/slaves/", views.preset_slaves_list, name="preset_slaves_list"),
+	path("presets/<str:config_id>/slaves/add/", views.add_slaves_to_preset, name="add_slaves_to_preset"),
+	path("presets/<str:config_id>/slaves/remove/", views.remove_slaves_from_preset, name="remove_slaves_from_preset"),
 	
 	# Health check endpoint (for load balancers/monitoring)
 	path("health-check/", views.health_check, name="health_check"),

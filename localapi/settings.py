@@ -102,12 +102,13 @@ WSGI_APPLICATION = "localapi.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+DATABASE_URL_PREVIEW = config('DATABASE_URL_PREVIEW', default='')
 DATABASE_URL = config('DATABASE_URL', default='')
 DATABASE_URL_NON_POOLING = config('DATABASE_POSTGRES_URL_NON_POOLING', default='')
 DATABASE_URL_POOLING = config('DATABASE_POSTGRES_URL', default='')
 
 ACTIVE_DATABASE_URL = next(
-    (url for url in [DATABASE_URL, DATABASE_URL_NON_POOLING, DATABASE_URL_POOLING] if url),
+    (url for url in [DATABASE_URL_PREVIEW, DATABASE_URL, DATABASE_URL_NON_POOLING, DATABASE_URL_POOLING] if url),
     ''
 )
 
@@ -127,17 +128,11 @@ if ACTIVE_DATABASE_URL:
             "sslmode": "require"
         }
 else:
+    # Use SQLite for local development
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": config('DATABASE_POSTGRES_DATABASE', default='postgres'),
-            "USER": config('DATABASE_POSTGRES_USER', default='postgres'),
-            "PASSWORD": config('DATABASE_POSTGRES_PASSWORD', default=''),
-            "HOST": config('DATABASE_POSTGRES_HOST', default='localhost'),
-            "PORT": config('DATABASE_POSTGRES_PORT', default='5432'),
-            "OPTIONS": {
-                "sslmode": "require",
-            },
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     }
 
@@ -254,6 +249,13 @@ CACHES = {
         'LOCATION': 'unique-snowflake',
     }
 }
+
+# Silence django-ratelimit cache warnings for development
+# (In production, use Redis or Memcached)
+SILENCED_SYSTEM_CHECKS = [
+    'django_ratelimit.E003',
+    'django_ratelimit.W001',
+]
 
 # django-ratelimit configuration (suppress warnings for locmem cache)
 RATELIMIT_VIEW_PREFIX = 'api:'

@@ -224,7 +224,7 @@ LOGGING = {
 # CORS settings for React frontend
 # PRODUCTION SETTINGS - Update these for your deployed frontend
 # SECURITY: CORS_ALLOW_ALL_ORIGINS removed - use explicit whitelist only
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000,https://smart-solar-react-frontend.vercel.app,https://smart-solar-react-frontend-prod.vercel.app', cast=lambda v: [s.strip() for s in v.split(',')])
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000,https://smart-solar-react-frontend-git-dev0-360watts-projects.vercel.app', cast=lambda v: [s.strip() for s in v.split(',')])
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
     'DELETE',

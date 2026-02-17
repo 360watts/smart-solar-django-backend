@@ -324,11 +324,27 @@ def create_firmware_version(request):
             f"Created by: {request.user.username}"
         )
         
-        # Verify file was saved
+        # Verify file was saved - detailed diagnostics
         if firmware.file:
-            logger.info(f"Firmware file saved: {firmware.file.name}")
+            logger.info(f"✅ Firmware file field populated: {firmware.file.name}")
+            logger.info(f"   File URL: {firmware.file.url}")
+            logger.info(f"   File storage: {firmware.file.storage.__class__.__name__}")
+            
+            # Try to verify file exists
+            try:
+                file_exists = firmware.file.storage.exists(firmware.file.name)
+                file_size_check = firmware.file.size
+                logger.info(f"   Storage.exists(): {file_exists}")
+                logger.info(f"   File.size: {file_size_check} bytes")
+                
+                if not file_exists:
+                    logger.error(f"❌ WARNING: File does not exist in storage after save!")
+                    logger.error(f"   This suggests S3 upload failed silently")
+                    logger.error(f"   Check AWS credentials and IAM permissions")
+            except Exception as verify_error:
+                logger.error(f"❌ Could not verify file existence: {verify_error}")
         else:
-            logger.error("Firmware file was not saved!")
+            logger.error("❌ Firmware file field is empty!")
         
         serializer = FirmwareVersionSerializer(firmware)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

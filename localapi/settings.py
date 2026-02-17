@@ -216,7 +216,13 @@ if USE_S3:
             USE_S3 = False
     else:
         # S3 Storage Configuration
-        AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='')
+        # Note: AWS_S3_ENDPOINT_URL is only needed for S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
+        # For standard AWS S3, boto3 automatically determines the endpoint from the region
+        endpoint_url = config('AWS_S3_ENDPOINT_URL', default=None)
+        if endpoint_url and endpoint_url.strip():
+            AWS_S3_ENDPOINT_URL = endpoint_url
+        # Otherwise, don't set AWS_S3_ENDPOINT_URL at all - let boto3 use default AWS endpoint
+        
         AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com'
         AWS_S3_OBJECT_PARAMETERS = {
             'CacheControl': 'max-age=86400',

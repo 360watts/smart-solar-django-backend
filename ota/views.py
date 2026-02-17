@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.http import FileResponse
+from django.http import FileResponse, Http404
 from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
@@ -49,6 +49,27 @@ def ota_check(request, device_id):
     try:
         # Get device
         device = get_object_or_404(Device, device_serial=device_id)
+        
+        # Parse request data
+        if request.method == 'POST':
+            data = request.data if hasattr(request, 'data') else request.POST.dict()
+        else:
+            data = request.GET.dict()
+        
+        current_firmware = data.get('firmware_version', '0x00010000')
+        config_version = data.get('config_version', '')
+        
+        # Log the check request
+        logger.info(f"OTA Check - Device: {device_id}, Current FW: {current_firmware}")
+        
+        # Get or create update log
+        update_log, created = DeviceUpdateLog.objects.get_or_create(
+            device=device,
+            current_firmware=current_firmware,
+            defaults={'status': DeviceUpdateLog.Status.CHECKING}
+        )
+        update_log.last_checked_at = timezone.now()
+        update_log.attempt_count += 1
         
         # Parse request data
         if request.method == 'POST':
@@ -124,6 +145,12 @@ def ota_check(request, device_id):
         
         return Response(response_data, status=status.HTTP_200_OK)
         
+    except Http404:
+        logger.warning(f"OTA Check - Device not found: {device_id}")
+        return Response({
+            'error': 'Device not found',
+            'device_id': device_id
+        }, status=status.HTTP_404_NOT_FOUND)
     except Device.DoesNotExist:
         logger.warning(f"OTA Check - Device not found: {device_id}")
         return Response({
@@ -180,6 +207,11 @@ def ota_download(request, firmware_id):
         
         return response
         
+    except Http404:
+        return Response(
+            {'error': 'Firmware not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
     except FirmwareVersion.DoesNotExist:
         return Response(
             {'error': 'Firmware not found'},

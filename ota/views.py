@@ -381,13 +381,29 @@ def ota_health(request):
     try:
         firmware_count = FirmwareVersion.objects.count()
         active_firmware = FirmwareVersion.objects.filter(is_active=True).count()
-        return Response({
+        
+        # Include storage backend info
+        from django.conf import settings
+        storage_backend = settings.DEFAULT_FILE_STORAGE
+        use_s3 = 'storages' in storage_backend or 's3' in storage_backend.lower()
+        
+        response_data = {
             'status': 'ok',
             'service': 'OTA',
             'firmware_versions': firmware_count,
             'active_firmware': active_firmware,
+            'storage_backend': storage_backend,
+            'using_s3': use_s3,
             'timestamp': timezone.now().isoformat()
-        })
+        }
+        
+        # Add S3 config details if using S3
+        if use_s3 and hasattr(settings, 'AWS_STORAGE_BUCKET_NAME'):
+            response_data['s3_bucket'] = settings.AWS_STORAGE_BUCKET_NAME
+            response_data['s3_region'] = getattr(settings, 'AWS_S3_REGION_NAME', 'unknown')
+            response_data['s3_configured'] = bool(settings.AWS_STORAGE_BUCKET_NAME)
+        
+        return Response(response_data)
     except Exception as e:
         logger.error(f"OTA Health Check Error: {str(e)}")
         return Response({

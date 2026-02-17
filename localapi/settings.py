@@ -247,17 +247,17 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-# Cache Configuration for django-ratelimit
-# Using locmem cache for development/testing with django-ratelimit
+# Cache Configuration
+# Using dummy cache for Vercel (no persistent cache needed in serverless)
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
+        'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
     }
 }
 
-# django-ratelimit configuration (suppress warnings for locmem cache)
+# django-ratelimit configuration
 RATELIMIT_VIEW_PREFIX = 'api:'
+RATELIMIT_ENABLE = False  # Disable rate limiting in production for now
 
 # REST Framework settings
 REST_FRAMEWORK = {

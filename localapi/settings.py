@@ -200,33 +200,52 @@ if USE_S3:
     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
     
-    # S3 Media Settings
-    AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
-    AWS_S3_OBJECT_PARAMETERS = {
-        'CacheControl': 'max-age=86400',
-    }
-    AWS_DEFAULT_ACL = 'public-read'
-    AWS_LOCATION = 'media'
-    
-    # Use django-storages for media files
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-    MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_LOCATION}/'
-    MEDIA_ROOT = None  # Not used with S3
-    
-    print(f"✅ Using S3 storage: {AWS_STORAGE_BUCKET_NAME}")
-    
-elif IS_VERCEL:
+    # Validate S3 configuration
+    if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_STORAGE_BUCKET_NAME]):
+        print("❌ ERROR: S3 credentials incomplete!")
+        print(f"   AWS_ACCESS_KEY_ID: {'✓' if AWS_ACCESS_KEY_ID else '✗'}")
+        print(f"   AWS_SECRET_ACCESS_KEY: {'✓' if AWS_SECRET_ACCESS_KEY else '✗'}")
+        print(f"   AWS_STORAGE_BUCKET_NAME: {'✓' if AWS_STORAGE_BUCKET_NAME else '✗'}")
+        
+        # Fallback to /tmp on Vercel if S3 not configured
+        if IS_VERCEL:
+            print("   Falling back to /tmp storage")
+            MEDIA_URL = '/media/'
+            MEDIA_ROOT = '/tmp/media'
+            DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+            USE_S3 = False
+    else:
+        # S3 Storage Configuration
+        AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='')
+        AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com'
+        AWS_S3_OBJECT_PARAMETERS = {
+            'CacheControl': 'max-age=86400',
+        }
+        AWS_DEFAULT_ACL = 'public-read'
+        AWS_LOCATION = 'firmware'  # Store in firmware/ folder within bucket
+        AWS_S3_FILE_OVERWRITE = False  # Don't overwrite files with same name
+        AWS_QUERYSTRING_AUTH = False  # Don't add auth query params to URLs (for public files)
+        
+        # Use django-storages S3 backend
+        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_LOCATION}/'
+        
+        # Still set MEDIA_ROOT for compatibility, but it won't be used
+        MEDIA_ROOT = '/tmp/media'  
+        
+        print(f"✅ Using S3 storage: {AWS_STORAGE_BUCKET_NAME} (region: {AWS_S3_REGION_NAME})")
+
+if not USE_S3 and IS_VERCEL:
     # Vercel has read-only filesystem except /tmp
     # WARNING: Files in /tmp are temporary and will be lost!
-    # For production, you MUST use S3 storage
     MEDIA_URL = '/media/'
     MEDIA_ROOT = '/tmp/media'
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
     
     print("⚠️  WARNING: Using /tmp storage on Vercel - files will be LOST after deployment!")
     print("   Set USE_S3=True and configure AWS credentials for persistent storage")
-    
-else:
+
+if not USE_S3 and not IS_VERCEL:
     # Local development storage
     MEDIA_URL = '/media/'
     MEDIA_ROOT = BASE_DIR / 'media'

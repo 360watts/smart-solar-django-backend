@@ -47,8 +47,14 @@ def ota_check(request, device_id):
     }
     """
     try:
-        # Get device
-        device = get_object_or_404(Device, device_serial=device_id)
+        # Get device - using filter instead of get_object_or_404 for better error handling
+        device = Device.objects.filter(device_serial=device_id).first()
+        if not device:
+            logger.warning(f"OTA Check - Device not found: {device_id}")
+            return Response({
+                'error': 'Device not found',
+                'device_id': device_id
+            }, status=status.HTTP_404_NOT_FOUND)
         
         # Parse request data
         if request.method == 'POST':
@@ -145,18 +151,6 @@ def ota_check(request, device_id):
         
         return Response(response_data, status=status.HTTP_200_OK)
         
-    except Http404:
-        logger.warning(f"OTA Check - Device not found: {device_id}")
-        return Response({
-            'error': 'Device not found',
-            'device_id': device_id
-        }, status=status.HTTP_404_NOT_FOUND)
-    except Device.DoesNotExist:
-        logger.warning(f"OTA Check - Device not found: {device_id}")
-        return Response({
-            'error': 'Device not found',
-            'device_id': device_id
-        }, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         logger.error(f"OTA Check Error - Device: {device_id}, Error: {str(e)}")
         return Response({
@@ -172,7 +166,12 @@ def ota_download(request, firmware_id):
     Stream firmware file to device
     """
     try:
-        firmware = get_object_or_404(FirmwareVersion, id=firmware_id)
+        firmware = FirmwareVersion.objects.filter(id=firmware_id).first()
+        if not firmware:
+            return Response(
+                {'error': 'Firmware not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
         
         if not firmware.file:
             return Response(

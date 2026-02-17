@@ -184,22 +184,22 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files (User uploads - firmware binaries)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-
 # Cloud Storage Configuration (AWS S3)
 # For production on Vercel, configure these environment variables:
 # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_STORAGE_BUCKET_NAME, AWS_S3_REGION_NAME
 USE_S3 = config('USE_S3', default='False', cast=bool)
 
+# Detect if running on Vercel
+IS_VERCEL = config('VERCEL', default='', cast=str) != '' or config('VERCEL_ENV', default='', cast=str) != ''
+
 if USE_S3:
-    # AWS S3 Settings
+    # AWS S3 Settings for production
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
     
-    # S3 Static & Media Settings
+    # S3 Media Settings
     AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
@@ -210,9 +210,30 @@ if USE_S3:
     # Use django-storages for media files
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_LOCATION}/'
-else:
-    # Local filesystem storage (development only)
+    MEDIA_ROOT = None  # Not used with S3
+    
+    print(f"✅ Using S3 storage: {AWS_STORAGE_BUCKET_NAME}")
+    
+elif IS_VERCEL:
+    # Vercel has read-only filesystem except /tmp
+    # WARNING: Files in /tmp are temporary and will be lost!
+    # For production, you MUST use S3 storage
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = '/tmp/media'
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+    
+    print("⚠️  WARNING: Using /tmp storage on Vercel - files will be LOST after deployment!")
+    print("   Set USE_S3=True and configure AWS credentials for persistent storage")
+    
+else:
+    # Local development storage
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
+    DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+    
+    # Create media directory if it doesn't exist
+    os.makedirs(MEDIA_ROOT, exist_ok=True)
+    os.makedirs(os.path.join(MEDIA_ROOT, 'firmware'), exist_ok=True)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

@@ -341,10 +341,6 @@ def create_firmware_version(request):
             {'error': f'Failed to upload firmware: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-        return Response(
-            {'error': f'Failed to upload firmware: {str(e)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
 
 
 @api_view(['PATCH'])
@@ -363,6 +359,57 @@ def update_firmware_version(request, firmware_id):
         return Response(
             {'error': 'Firmware not found'},
             status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAdminUser])
+def delete_firmware_version(request, firmware_id):
+    """Delete firmware version (admin only)"""
+    try:
+        firmware = get_object_or_404(FirmwareVersion, id=firmware_id)
+        
+        # Check if firmware is currently active
+        if firmware.is_active:
+            return Response(
+                {'error': 'Cannot delete active firmware. Deactivate it first.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        version = firmware.version
+        filename = firmware.filename
+        
+        # Delete the file from storage (S3 or local)
+        if firmware.file:
+            try:
+                firmware.file.delete(save=False)
+                logger.info(f"Deleted firmware file: {firmware.file.name}")
+            except Exception as e:
+                logger.warning(f"Failed to delete firmware file: {str(e)}")
+        
+        # Delete the database record
+        firmware.delete()
+        
+        logger.info(
+            f"Firmware Deleted - Version: {version}, File: {filename}, "
+            f"Deleted by: {request.user.username}"
+        )
+        
+        return Response(
+            {'message': f'Firmware version {version} deleted successfully'},
+            status=status.HTTP_200_OK
+        )
+        
+    except FirmwareVersion.DoesNotExist:
+        return Response(
+            {'error': 'Firmware not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Firmware Delete Error - ID: {firmware_id}, Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to delete firmware: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 

@@ -15,6 +15,7 @@ urlpatterns = [
     path('firmware/', views.firmware_versions_list, name='firmware_list'),
     path('firmware/create/', views.create_firmware_version, name='create_firmware'),
     path('firmware/<int:firmware_id>/', views.update_firmware_version, name='update_firmware'),
+    path('firmware/<int:firmware_id>/delete/', views.delete_firmware_version, name='delete_firmware'),
     
     # Configuration
     path('config/', views.get_ota_config, name='get_ota_config'),

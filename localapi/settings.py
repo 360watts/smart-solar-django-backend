@@ -227,10 +227,25 @@ if USE_S3:
         AWS_S3_OBJECT_PARAMETERS = {
             'CacheControl': 'max-age=86400',
         }
-        AWS_DEFAULT_ACL = 'public-read'
+        # Modern S3 buckets have ACLs disabled (Bucket owner enforced)
+        # Use None instead of 'public-read' to avoid AccessControlListNotSupported error
+        AWS_DEFAULT_ACL = None
         AWS_LOCATION = 'firmware'  # Store in firmware/ folder within bucket
         AWS_S3_FILE_OVERWRITE = False  # Don't overwrite files with same name
-        AWS_QUERYSTRING_AUTH = False  # Don't add auth query params to URLs (for public files)
+        
+        # For public firmware downloads, set bucket policy in AWS Console:
+        # {
+        #   "Version": "2012-10-17",
+        #   "Statement": [{
+        #     "Sid": "PublicReadGetObject",
+        #     "Effect": "Allow",
+        #     "Principal": "*",
+        #     "Action": "s3:GetObject",
+        #     "Resource": "arn:aws:s3:::360watts-firmware/*"
+        #   }]
+        # }
+        # OR use signed URLs:
+        AWS_QUERYSTRING_AUTH = True  # Generate signed URLs with expiration
         
         # Use django-storages S3 backend
         DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

@@ -7,6 +7,7 @@ from django.http import FileResponse, Http404
 from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
+from django.core.files.base import ContentFile
 import os
 import hashlib
 import logging
@@ -291,23 +292,23 @@ def create_firmware_version(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Calculate file size
-        file_size = firmware_file.size
+        # Read file content once for both checksum and storage
+        # This avoids issues with file pointer seeking on different storage backends
+        file_content = firmware_file.read()
+        file_size = len(file_content)
+        original_filename = firmware_file.name
         
-        # Calculate SHA256 checksum
-        sha256_hash = hashlib.sha256()
-        for chunk in firmware_file.chunks():
-            sha256_hash.update(chunk)
-        checksum = sha256_hash.hexdigest()
+        # Calculate SHA256 checksum from content
+        checksum = hashlib.sha256(file_content).hexdigest()
         
-        # Reset file pointer after hashing
-        firmware_file.seek(0)
+        # Create a new ContentFile with the content (works with S3 and local storage)
+        content_file = ContentFile(file_content, name=original_filename)
         
-        # Create firmware version
+        # Create firmware version with ContentFile
         firmware = FirmwareVersion.objects.create(
             version=version,
-            filename=firmware_file.name,
-            file=firmware_file,
+            filename=original_filename,
+            file=content_file,
             size=file_size,
             checksum=checksum,
             description=description,
@@ -319,14 +320,27 @@ def create_firmware_version(request):
         logger.info(
             f"Firmware Created - Version: {firmware.version}, "
             f"Size: {firmware.size} bytes, Checksum: {checksum[:16]}..., "
+            f"Storage: {settings.DEFAULT_FILE_STORAGE}, "
             f"Created by: {request.user.username}"
         )
+        
+        # Verify file was saved
+        if firmware.file:
+            logger.info(f"Firmware file saved: {firmware.file.name}")
+        else:
+            logger.error("Firmware file was not saved!")
         
         serializer = FirmwareVersionSerializer(firmware)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
         
     except Exception as e:
         logger.error(f"Firmware Upload Error: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return Response(
+            {'error': f'Failed to upload firmware: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
         return Response(
             {'error': f'Failed to upload firmware: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR

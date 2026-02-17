@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 import os
 import hashlib
 import logging
@@ -304,6 +305,49 @@ def create_firmware_version(request):
         # Create a new ContentFile with the content (works with S3 and local storage)
         content_file = ContentFile(file_content, name=original_filename)
         
+        # === COMPREHENSIVE STORAGE DEBUGGING ===
+        logger.info("=" * 80)
+        logger.info("STORAGE DEBUGGING - BEFORE MODEL CREATION")
+        logger.info("=" * 80)
+        
+        # Check settings
+        logger.info(f"1. Settings Configuration:")
+        logger.info(f"   DEFAULT_FILE_STORAGE: {settings.DEFAULT_FILE_STORAGE}")
+        logger.info(f"   USE_S3: {getattr(settings, 'USE_S3', 'NOT SET')}")
+        logger.info(f"   AWS_STORAGE_BUCKET_NAME: {getattr(settings, 'AWS_STORAGE_BUCKET_NAME', 'NOT SET')}")
+        logger.info(f"   AWS_S3_REGION_NAME: {getattr(settings, 'AWS_S3_REGION_NAME', 'NOT SET')}")
+        logger.info(f"   AWS_LOCATION: {getattr(settings, 'AWS_LOCATION', 'NOT SET')}")
+        logger.info(f"   MEDIA_ROOT: {settings.MEDIA_ROOT}")
+        logger.info(f"   MEDIA_URL: {settings.MEDIA_URL}")
+        
+        # Check default_storage
+        logger.info(f"2. Default Storage Object:")
+        logger.info(f"   default_storage class: {default_storage.__class__.__name__}")
+        logger.info(f"   default_storage module: {default_storage.__class__.__module__}")
+        logger.info(f"   default_storage full path: {default_storage.__class__.__module__}.{default_storage.__class__.__name__}")
+        
+        # Check model field storage
+        logger.info(f"3. FirmwareVersion Model Field Storage:")
+        file_field = FirmwareVersion._meta.get_field('file')
+        logger.info(f"   Field type: {file_field.__class__.__name__}")
+        logger.info(f"   Field storage class: {file_field.storage.__class__.__name__}")
+        logger.info(f"   Field storage module: {file_field.storage.__class__.__module__}")
+        logger.info(f"   Field storage is default_storage: {file_field.storage is default_storage}")
+        logger.info(f"   Field storage == default_storage: {file_field.storage == default_storage}")
+        
+        # Check if S3 storage has credentials
+        if hasattr(file_field.storage, 'bucket_name'):
+            logger.info(f"4. S3 Storage Configuration:")
+            logger.info(f"   S3 Bucket: {getattr(file_field.storage, 'bucket_name', 'N/A')}")
+            logger.info(f"   S3 Region: {getattr(file_field.storage, 'region_name', 'N/A')}")
+            logger.info(f"   S3 Access Key ID: {getattr(file_field.storage, 'access_key', 'N/A')[:10]}..." if hasattr(file_field.storage, 'access_key') else "   No access_key attribute")
+        else:
+            logger.info(f"4. Storage is NOT S3 (no bucket_name attribute)")
+            logger.info(f"   Storage location: {getattr(file_field.storage, 'location', 'N/A')}")
+            logger.info(f"   Storage base_url: {getattr(file_field.storage, 'base_url', 'N/A')}")
+        
+        logger.info("=" * 80)
+        
         # Create firmware version with ContentFile
         firmware = FirmwareVersion.objects.create(
             version=version,
@@ -324,27 +368,50 @@ def create_firmware_version(request):
             f"Created by: {request.user.username}"
         )
         
+        # === STORAGE DEBUGGING - AFTER MODEL CREATION ===
+        logger.info("=" * 80)
+        logger.info("STORAGE DEBUGGING - AFTER MODEL CREATION")
+        logger.info("=" * 80)
+        
         # Verify file was saved - detailed diagnostics
         if firmware.file:
             logger.info(f"✅ Firmware file field populated: {firmware.file.name}")
             logger.info(f"   File URL: {firmware.file.url}")
-            logger.info(f"   File storage: {firmware.file.storage.__class__.__name__}")
+            logger.info(f"   File storage class: {firmware.file.storage.__class__.__name__}")
+            logger.info(f"   File storage module: {firmware.file.storage.__class__.__module__}")
+            
+            # Check if storage changed after save
+            file_field = FirmwareVersion._meta.get_field('file')
+            logger.info(f"   Model field storage (after save): {file_field.storage.__class__.__name__}")
+            logger.info(f"   Instance file.storage == field.storage: {firmware.file.storage is file_field.storage}")
             
             # Try to verify file exists
             try:
                 file_exists = firmware.file.storage.exists(firmware.file.name)
                 file_size_check = firmware.file.size
-                logger.info(f"   Storage.exists(): {file_exists}")
+                logger.info(f"   Storage.exists({firmware.file.name}): {file_exists}")
                 logger.info(f"   File.size: {file_size_check} bytes")
+                
+                # If it's FileSystemStorage, show where it saved the file
+                if firmware.file.storage.__class__.__name__ == 'FileSystemStorage':
+                    import os
+                    full_path = firmware.file.storage.path(firmware.file.name)
+                    logger.error(f"❌ WARNING: Using FileSystemStorage instead of S3!")
+                    logger.error(f"   File saved to: {full_path}")
+                    logger.error(f"   File exists on disk: {os.path.exists(full_path)}")
+                    logger.error(f"   This file will be LOST when Vercel container restarts!")
                 
                 if not file_exists:
                     logger.error(f"❌ WARNING: File does not exist in storage after save!")
-                    logger.error(f"   This suggests S3 upload failed silently")
-                    logger.error(f"   Check AWS credentials and IAM permissions")
+                    logger.error(f"   This suggests upload failed silently")
             except Exception as verify_error:
                 logger.error(f"❌ Could not verify file existence: {verify_error}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
         else:
             logger.error("❌ Firmware file field is empty!")
+        
+        logger.info("=" * 80)
         
         serializer = FirmwareVersionSerializer(firmware)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

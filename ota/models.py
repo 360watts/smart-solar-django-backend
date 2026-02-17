@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
+from django.core.files.storage import default_storage
 from api.models import Device
 
 
@@ -9,7 +10,7 @@ class FirmwareVersion(models.Model):
     
     version = models.CharField(max_length=32, unique=True, help_text="e.g., 0x00020000")
     filename = models.CharField(max_length=255)
-    file = models.FileField(upload_to='firmware/', help_text="Firmware binary file")
+    file = models.FileField(upload_to='firmware/', storage=lambda: default_storage, help_text="Firmware binary file")
     size = models.PositiveIntegerField(help_text="File size in bytes")
     checksum = models.CharField(max_length=64, blank=True, null=True, help_text="SHA256 checksum")
     description = models.TextField(blank=True, null=True)

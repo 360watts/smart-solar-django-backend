@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
 import os
+import hashlib
 import logging
 
 from api.models import Device
@@ -258,13 +259,78 @@ def firmware_versions_list(request):
 @api_view(['POST'])
 @permission_classes([IsAdminUser])
 def create_firmware_version(request):
-    """Create a new firmware version (admin only)"""
-    serializer = FirmwareVersionSerializer(data=request.data)
-    if serializer.is_valid():
-        firmware = serializer.save(created_by=request.user)
-        logger.info(f"Firmware Created - Version: {firmware.version}, Created by: {request.user.username}")
+    """
+    Create a new firmware version (admin only)
+    Handles multipart/form-data file upload
+    """
+    try:
+        # Get file from request
+        firmware_file = request.FILES.get('file')
+        if not firmware_file:
+            return Response(
+                {'error': 'No firmware file provided', 'field': 'file'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get metadata
+        version = request.data.get('version')
+        description = request.data.get('description', '')
+        release_notes = request.data.get('release_notes', '')
+        is_active = request.data.get('is_active', 'false').lower() == 'true'
+        
+        if not version:
+            return Response(
+                {'error': 'Version is required', 'field': 'version'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if version already exists
+        if FirmwareVersion.objects.filter(version=version).exists():
+            return Response(
+                {'error': f'Firmware version {version} already exists', 'field': 'version'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Calculate file size
+        file_size = firmware_file.size
+        
+        # Calculate SHA256 checksum
+        sha256_hash = hashlib.sha256()
+        for chunk in firmware_file.chunks():
+            sha256_hash.update(chunk)
+        checksum = sha256_hash.hexdigest()
+        
+        # Reset file pointer after hashing
+        firmware_file.seek(0)
+        
+        # Create firmware version
+        firmware = FirmwareVersion.objects.create(
+            version=version,
+            filename=firmware_file.name,
+            file=firmware_file,
+            size=file_size,
+            checksum=checksum,
+            description=description,
+            release_notes=release_notes,
+            is_active=is_active,
+            created_by=request.user
+        )
+        
+        logger.info(
+            f"Firmware Created - Version: {firmware.version}, "
+            f"Size: {firmware.size} bytes, Checksum: {checksum[:16]}..., "
+            f"Created by: {request.user.username}"
+        )
+        
+        serializer = FirmwareVersionSerializer(firmware)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    except Exception as e:
+        logger.error(f"Firmware Upload Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to upload firmware: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(['PATCH'])

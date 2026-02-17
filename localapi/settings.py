@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'django_extensions',  # For HTTPS development server
     'drf_spectacular',  # API documentation
     'django_ratelimit',  # Rate limiting
+    'storages',  # django-storages for S3 file storage
     'api',
     'ota',  # OTA Updates App
 ]

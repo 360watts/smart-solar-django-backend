@@ -52,9 +52,6 @@ urlpatterns = [
 	path("presets/<str:config_id>/slaves/<int:slave_id>/", views.update_slave, name="update_slave"),
 	path("presets/<str:config_id>/slaves/<int:slave_id>/delete/", views.delete_slave, name="delete_slave"),
 	
-	# Health check endpoint (for load balancers/monitoring)
-	path("health-check/", views.health_check, name="health_check"),
-	
 	# Alert management endpoints (persistent alerts)
 	path("alerts/manage/", views.alerts_crud, name="alerts_crud"),
 	path("alerts/<int:alert_id>/", views.alert_detail, name="alert_detail"),

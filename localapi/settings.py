@@ -225,7 +225,7 @@ LOGGING = {
 # CORS settings for React frontend
 # PRODUCTION SETTINGS - Update these for your deployed frontend
 # SECURITY: CORS_ALLOW_ALL_ORIGINS removed - use explicit whitelist only
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000,https://smart-solar-react-frontend.vercel.app,https://smart-solar-react-frontend-prod.vercel.app', cast=lambda v: [s.strip() for s in v.split(',')])
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000,https://smart-solar-react-frontend-git-dev0-360watts-projects.vercel.app', cast=lambda v: [s.strip() for s in v.split(',')])
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
     'DELETE',
@@ -247,17 +247,17 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-# Cache Configuration for django-ratelimit
-# Using locmem cache for development/testing with django-ratelimit
+# Cache Configuration
+# Using dummy cache for Vercel (no persistent cache needed in serverless)
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
+        'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
     }
 }
 
-# django-ratelimit configuration (suppress warnings for locmem cache)
+# django-ratelimit configuration
 RATELIMIT_VIEW_PREFIX = 'api:'
+RATELIMIT_ENABLE = False  # Disable rate limiting in production for now
 
 # REST Framework settings
 REST_FRAMEWORK = {

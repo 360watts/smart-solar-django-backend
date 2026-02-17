@@ -20,7 +20,7 @@
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
-          "value": "https://smart-solar-react-frontend.vercel.app"
+          "value": "https://smart-solar-react-frontend-git-dev0-360watts-projects.vercel.app"
         },
         {
           "key": "Access-Control-Allow-Methods",
@@ -41,7 +41,7 @@
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
-          "value": "https://smart-solar-react-frontend-prod.vercel.app"
+          "value": "https://smart-solar-react-frontend-git-dev0-360watts-projects.vercel.app"
         },
         {
           "key": "Access-Control-Allow-Methods",

@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     'drf_spectacular',  # API documentation
     'django_ratelimit',  # Rate limiting
     'api',
+    'ota',  # OTA Updates App
 ]
 
 MIDDLEWARE = [

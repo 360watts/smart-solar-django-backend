@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, include
 from . import views
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -60,4 +60,7 @@ urlpatterns = [
 	path("alerts/<int:alert_id>/", views.alert_detail, name="alert_detail"),
 	path("alerts/<int:alert_id>/acknowledge/", views.alert_acknowledge, name="alert_acknowledge"),
 	path("alerts/<int:alert_id>/resolve/", views.alert_resolve, name="alert_resolve"),
+	
+	# OTA Update endpoints
+	path("ota/", include("ota.urls")),
 ]

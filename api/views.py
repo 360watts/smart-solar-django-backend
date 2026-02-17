@@ -6,7 +6,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from django.db import models, connection
-from django.db.models import Q
+from django.db.models import Q, Avg, Sum, Count, F
+from django.db.models.functions import Coalesce
 from django.conf import settings
 from django.views.decorators.cache import cache_page
 from django_ratelimit.decorators import ratelimit
@@ -579,36 +580,38 @@ def system_health(request: Any) -> Response:
     Get system health metrics for React frontend
     Requires staff authentication
     Cached for 30 seconds to balance freshness and performance
+    
+    Performance optimized: Uses database-level aggregations
     """
-    # Calculate system health metrics
-    total_devices = Device.objects.count()
-    active_devices = 0
-    total_telemetry_points = TelemetryData.objects.count()
+    now = timezone.now()
+    one_hour_ago = now - timedelta(hours=1)
+    five_minutes_ago = now - timedelta(minutes=5)
     
-    # Count active devices (devices with telemetry in last hour)
-    one_hour_ago = timezone.now() - timedelta(hours=1)
-    active_device_ids = TelemetryData.objects.filter(
-        timestamp__gte=one_hour_ago
-    ).values_list('device_id', flat=True).distinct()
-    active_devices = len(set(active_device_ids))
+    # Batch count queries using aggregate (more efficient than separate count() calls)
+    stats = Device.objects.aggregate(total_devices=Count('id'))
+    telemetry_stats = TelemetryData.objects.aggregate(
+        total_telemetry=Count('id'),
+        active_devices=Count('device_id', distinct=True, filter=Q(timestamp__gte=one_hour_ago)),
+        has_recent=Count('id', filter=Q(timestamp__gte=five_minutes_ago))
+    )
     
-    # Calculate uptime (simplified - based on when first telemetry was received)
-    first_telemetry = TelemetryData.objects.order_by("timestamp").first()
+    # Get earliest timestamp for uptime calculation (only fetch the timestamp field)
+    first_telemetry = TelemetryData.objects.order_by("timestamp").values('timestamp').first()
     uptime_seconds = 0
     if first_telemetry:
-        uptime_seconds = (timezone.now() - first_telemetry.timestamp).total_seconds()
+        uptime_seconds = (now - first_telemetry['timestamp']).total_seconds()
     
     # Database connection status
     db_status = "healthy"
     
     # MQTT broker status (simplified - assume healthy if we have recent data)
-    recent_data = TelemetryData.objects.filter(timestamp__gte=timezone.now() - timedelta(minutes=5)).exists()
-    mqtt_status = "healthy" if recent_data else "warning"
+    mqtt_status = "healthy" if telemetry_stats['has_recent'] > 0 else "warning"
+    active_devices = telemetry_stats['active_devices'] or 0
     
     return Response({
-        "total_devices": total_devices,
+        "total_devices": stats['total_devices'] or 0,
         "active_devices": active_devices,
-        "total_telemetry_points": total_telemetry_points,
+        "total_telemetry_points": telemetry_stats['total_telemetry'] or 0,
         "uptime_seconds": uptime_seconds,
         "database_status": db_status,
         "mqtt_status": mqtt_status,
@@ -624,34 +627,52 @@ def kpis(request: Any) -> Response:
     Get key performance indicators for React frontend
     Requires staff authentication
     Cached for 60 seconds to reduce calculation overhead
+    
+    Performance optimized: Uses database-level aggregations instead of Python calculations
     """
-    # Calculate KPIs from telemetry data
-    recent_data = TelemetryData.objects.filter(timestamp__gte=timezone.now() - timedelta(hours=24))
+    cutoff_time = timezone.now() - timedelta(hours=24)
     
-    kpis = {
-        "total_energy_generated": 0,
-        "average_voltage": 0,
-        "average_current": 0,
-        "system_efficiency": 0,
-        "data_points_last_24h": recent_data.count(),
-        "active_devices_24h": len(set(recent_data.values_list('device_id', flat=True).distinct()))
-    }
+    # Use database aggregations for efficiency (single query for counts)
+    base_stats = TelemetryData.objects.filter(
+        timestamp__gte=cutoff_time
+    ).aggregate(
+        data_points=Count('id'),
+        active_devices=Count('device_id', distinct=True)
+    )
     
-    # Calculate averages
-    voltage_readings = recent_data.filter(data_type="voltage").values_list('value', flat=True)
-    current_readings = recent_data.filter(data_type="current").values_list('value', flat=True)
-    power_readings = recent_data.filter(data_type="power").values_list('value', flat=True)
+    # Aggregate by data_type in a single query
+    type_aggregates = TelemetryData.objects.filter(
+        timestamp__gte=cutoff_time
+    ).values('data_type').annotate(
+        avg_value=Avg('value'),
+        sum_value=Sum('value'),
+        count=Count('id')
+    )
     
-    if voltage_readings:
-        kpis["average_voltage"] = sum(voltage_readings) / len(voltage_readings)
-    if current_readings:
-        kpis["average_current"] = sum(current_readings) / len(current_readings)
-    if power_readings:
-        kpis["total_energy_generated"] = sum(power_readings) * 24 / 1000  # kWh approximation
+    # Build lookup for easy access
+    aggregates = {item['data_type']: item for item in type_aggregates}
+    
+    voltage_data = aggregates.get('voltage', {})
+    current_data = aggregates.get('current', {})
+    power_data = aggregates.get('power', {})
+    
+    avg_voltage = voltage_data.get('avg_value') or 0
+    avg_current = current_data.get('avg_value') or 0
+    total_power = power_data.get('sum_value') or 0
     
     # Calculate efficiency (simplified)
-    if kpis["average_voltage"] > 0 and kpis["average_current"] > 0:
-        kpis["system_efficiency"] = min(100, (kpis["average_voltage"] * kpis["average_current"]) / 100)  # Simplified efficiency calc
+    efficiency = 0
+    if avg_voltage > 0 and avg_current > 0:
+        efficiency = min(100, (avg_voltage * avg_current) / 100)
+    
+    kpis = {
+        "total_energy_generated": (total_power * 24 / 1000) if total_power else 0,  # kWh approximation
+        "average_voltage": round(avg_voltage, 2),
+        "average_current": round(avg_current, 2),
+        "system_efficiency": round(efficiency, 2),
+        "data_points_last_24h": base_stats['data_points'] or 0,
+        "active_devices_24h": base_stats['active_devices'] or 0
+    }
     
     return Response(kpis)
 

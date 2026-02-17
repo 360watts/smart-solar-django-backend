@@ -1,8 +1,29 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
-from django.core.files.storage import default_storage
+from django.conf import settings
 from api.models import Device
+
+
+class FirmwareStorage:
+    """
+    Lazy storage wrapper that ensures we use the correct storage backend.
+    Django's default_storage is initialized at import time, which can happen
+    before settings are fully configured, causing it to use FileSystemStorage
+    even when S3 is configured in settings.
+    """
+    _storage = None
+    
+    def __call__(self):
+        if self._storage is None:
+            from django.utils.module_loading import import_string
+            storage_path = getattr(settings, 'DEFAULT_FILE_STORAGE', 'django.core.files.storage.FileSystemStorage')
+            storage_class = import_string(storage_path)
+            self._storage = storage_class()
+        return self._storage
+
+
+firmware_storage = FirmwareStorage()
 
 
 class FirmwareVersion(models.Model):
@@ -10,7 +31,7 @@ class FirmwareVersion(models.Model):
     
     version = models.CharField(max_length=32, unique=True, help_text="e.g., 0x00020000")
     filename = models.CharField(max_length=255)
-    file = models.FileField(upload_to='firmware/', storage=default_storage, help_text="Firmware binary file")
+    file = models.FileField(upload_to='firmware/', storage=firmware_storage, help_text="Firmware binary file")
     size = models.PositiveIntegerField(help_text="File size in bytes")
     checksum = models.CharField(max_length=64, blank=True, null=True, help_text="SHA256 checksum")
     description = models.TextField(blank=True, null=True)

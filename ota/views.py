@@ -24,6 +24,8 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 @api_view(['POST', 'GET'])
@@ -136,16 +138,56 @@ def ota_check(request, device_id):
         update_log.status = DeviceUpdateLog.Status.AVAILABLE
         update_log.save()
         
-        # Build download URL
-        download_url = request.build_absolute_uri(
-            reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
-        )
-        
+        # Build download URL. Prefer returning a presigned S3 URL when S3 is configured
+        download_url = None
+        url_type = 'direct'
+        url_ttl = None
+
+        try:
+            # Detect django-storages S3 backend
+            try:
+                from storages.backends.s3boto3 import S3Boto3Storage
+                is_s3 = isinstance(latest_firmware.file.storage, S3Boto3Storage)
+            except Exception:
+                is_s3 = False
+
+            if is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
+                s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
+                    aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
+                    region_name=getattr(settings, 'AWS_S3_REGION_NAME', None),
+                    endpoint_url=getattr(settings, 'AWS_S3_ENDPOINT_URL', None) or None,
+                )
+                key = latest_firmware.file.name
+                expires = getattr(settings, 'AWS_PRESIGNED_URL_EXPIRATION', 300)
+                try:
+                    presigned = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': key},
+                        ExpiresIn=int(expires),
+                    )
+                    download_url = presigned
+                    url_type = 's3_presigned'
+                    url_ttl = int(expires)
+                except (BotoCoreError, ClientError) as e:
+                    logger.warning(f"Presigned URL generation failed, falling back to proxy download: {e}")
+
+        except Exception as e:
+            logger.debug(f"Presigned URL flow skipped or failed: {e}")
+
+        if not download_url:
+            download_url = request.build_absolute_uri(
+                reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
+            )
+
         response_data = {
             'id': f'fw_{latest_firmware.id}',
             'version': latest_firmware.version,
             'size': latest_firmware.size,
             'url': download_url,
+            'url_type': url_type,
+            'url_ttl': url_ttl,
             'checksum': latest_firmware.checksum or '',
             'status': 1  # Update available
         }

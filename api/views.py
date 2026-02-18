@@ -1486,6 +1486,191 @@ def _register_to_dict(reg):
 
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
+def global_slaves_list(request):
+    """
+    Get all slaves across all gateway configurations.
+    Requires staff authentication.
+    """
+    slaves = SlaveDevice.objects.select_related('gateway_config').prefetch_related('registers').all()
+    data = []
+    for slave in slaves:
+        data.append({
+            'id': slave.id,
+            'slave_id': slave.slave_id,
+            'device_name': slave.device_name,
+            'polling_interval_ms': slave.polling_interval_ms,
+            'timeout_ms': slave.timeout_ms,
+            'priority': slave.priority,
+            'enabled': slave.enabled,
+            'config_id': slave.gateway_config.id,
+            'config_name': slave.gateway_config.name or slave.gateway_config.config_id,
+            'registers': [_register_to_dict(reg) for reg in slave.registers.all()],
+        })
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def global_slave_create(request):
+    """
+    Create a new slave device. Requires config_id (DB integer id) in the request body.
+    Requires staff authentication.
+    """
+    config_id = request.data.get('config_id')
+    if not config_id:
+        return Response({'error': 'config_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        config = GatewayConfig.objects.get(id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave_id = request.data.get('slave_id')
+    device_name = request.data.get('device_name')
+    polling_interval_ms = request.data.get('polling_interval_ms', 5000)
+    timeout_ms = request.data.get('timeout_ms', 1000)
+    priority = request.data.get('priority', 1)
+    enabled = request.data.get('enabled', True)
+    registers_data = request.data.get('registers', [])
+
+    if not slave_id or not device_name:
+        return Response({'error': 'slave_id and device_name are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if SlaveDevice.objects.filter(gateway_config=config, slave_id=slave_id).exists():
+        return Response({'error': 'Slave ID already exists for this configuration'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        slave = SlaveDevice.objects.create(
+            gateway_config=config,
+            slave_id=slave_id,
+            device_name=device_name,
+            polling_interval_ms=polling_interval_ms,
+            timeout_ms=timeout_ms,
+            priority=priority,
+            enabled=enabled,
+        )
+
+        registers = []
+        for reg_data in registers_data:
+            register = RegisterMapping.objects.create(
+                slave=slave,
+                label=reg_data.get('label', ''),
+                address=reg_data.get('address', 0),
+                num_registers=reg_data.get('num_registers', 1),
+                function_code=reg_data.get('function_code', 3),
+                register_type=reg_data.get('register_type', 3),
+                data_type=reg_data.get('data_type', 0),
+                byte_order=reg_data.get('byte_order', 0),
+                word_order=reg_data.get('word_order', 0),
+                access_mode=reg_data.get('access_mode', 0),
+                scale_factor=reg_data.get('scale_factor', 1.0),
+                offset=reg_data.get('offset', 0.0),
+                unit=reg_data.get('unit') or None,
+                decimal_places=reg_data.get('decimal_places', 2),
+                category=reg_data.get('category') or None,
+                high_alarm_threshold=reg_data.get('high_alarm_threshold'),
+                low_alarm_threshold=reg_data.get('low_alarm_threshold'),
+                description=reg_data.get('description') or None,
+                enabled=reg_data.get('enabled', True),
+            )
+            registers.append(_register_to_dict(register))
+
+        return Response({
+            'id': slave.id,
+            'slave_id': slave.slave_id,
+            'device_name': slave.device_name,
+            'polling_interval_ms': slave.polling_interval_ms,
+            'timeout_ms': slave.timeout_ms,
+            'priority': slave.priority,
+            'enabled': slave.enabled,
+            'config_id': config.id,
+            'config_name': config.name or config.config_id,
+            'registers': registers,
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['PUT'])
+@permission_classes([IsStaffUser])
+def global_slave_update(request, slave_pk):
+    """
+    Update a slave device by its DB primary key.
+    Requires staff authentication.
+    """
+    try:
+        slave = SlaveDevice.objects.select_related('gateway_config').get(id=slave_pk)
+    except SlaveDevice.DoesNotExist:
+        return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave.device_name = request.data.get('device_name', slave.device_name)
+    slave.polling_interval_ms = request.data.get('polling_interval_ms', slave.polling_interval_ms)
+    slave.timeout_ms = request.data.get('timeout_ms', slave.timeout_ms)
+    slave.priority = request.data.get('priority', slave.priority)
+    slave.enabled = request.data.get('enabled', slave.enabled)
+    registers_data = request.data.get('registers', [])
+    slave.save()
+
+    RegisterMapping.objects.filter(slave=slave).delete()
+    registers = []
+    for reg_data in registers_data:
+        register = RegisterMapping.objects.create(
+            slave=slave,
+            label=reg_data.get('label', ''),
+            address=reg_data.get('address', 0),
+            num_registers=reg_data.get('num_registers', 1),
+            function_code=reg_data.get('function_code', 3),
+            register_type=reg_data.get('register_type', 3),
+            data_type=reg_data.get('data_type', 0),
+            byte_order=reg_data.get('byte_order', 0),
+            word_order=reg_data.get('word_order', 0),
+            access_mode=reg_data.get('access_mode', 0),
+            scale_factor=reg_data.get('scale_factor', 1.0),
+            offset=reg_data.get('offset', 0.0),
+            unit=reg_data.get('unit') or None,
+            decimal_places=reg_data.get('decimal_places', 2),
+            category=reg_data.get('category') or None,
+            high_alarm_threshold=reg_data.get('high_alarm_threshold'),
+            low_alarm_threshold=reg_data.get('low_alarm_threshold'),
+            description=reg_data.get('description') or None,
+            enabled=reg_data.get('enabled', True),
+        )
+        registers.append(_register_to_dict(register))
+
+    config = slave.gateway_config
+    return Response({
+        'id': slave.id,
+        'slave_id': slave.slave_id,
+        'device_name': slave.device_name,
+        'polling_interval_ms': slave.polling_interval_ms,
+        'timeout_ms': slave.timeout_ms,
+        'priority': slave.priority,
+        'enabled': slave.enabled,
+        'config_id': config.id,
+        'config_name': config.name or config.config_id,
+        'registers': registers,
+    })
+
+
+@api_view(['DELETE'])
+@permission_classes([IsStaffUser])
+def global_slave_delete(request, slave_pk):
+    """
+    Delete a slave device by its DB primary key.
+    Requires staff authentication.
+    """
+    try:
+        slave = SlaveDevice.objects.get(id=slave_pk)
+    except SlaveDevice.DoesNotExist:
+        return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave.delete()
+    return Response({'message': 'Slave deleted successfully'})
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
 def slaves_list(request, config_id):
     """
     Get all slaves for a gateway configuration

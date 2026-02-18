@@ -111,15 +111,9 @@ class RegisterMappingSerializer(serializers.ModelSerializer):
 	# Renamed fields to match firmware expectation (camelCase)
 	numRegisters = serializers.IntegerField(source="num_registers")
 	functionCode = serializers.IntegerField(source="function_code")
-	registerType = serializers.IntegerField(source="register_type")
 	dataType = serializers.IntegerField(source="data_type")
-	byteOrder = serializers.IntegerField(source="byte_order")
-	wordOrder = serializers.IntegerField(source="word_order")
-	accessMode = serializers.IntegerField(source="access_mode")
 	scaleFactor = serializers.FloatField(source="scale_factor")
-	decimalPlaces = serializers.IntegerField(source="decimal_places")
-	highAlarmThreshold = serializers.FloatField(source="high_alarm_threshold", allow_null=True)
-	lowAlarmThreshold = serializers.FloatField(source="low_alarm_threshold", allow_null=True)
+	offset = serializers.FloatField(source="offset")
 
 	class Meta:
 		model = RegisterMapping
@@ -128,19 +122,9 @@ class RegisterMappingSerializer(serializers.ModelSerializer):
 			"address",
 			"numRegisters",
 			"functionCode",
-			"registerType",
 			"dataType",
-			"byteOrder",
-			"wordOrder",
-			"accessMode",
 			"scaleFactor",
 			"offset",
-			"unit",
-			"decimalPlaces",
-			"category",
-			"highAlarmThreshold",
-			"lowAlarmThreshold",
-			"description",
 			"enabled",
 		]
 
@@ -159,7 +143,6 @@ class SlaveDeviceSerializer(serializers.ModelSerializer):
 			"deviceName",
 			"pollingIntervalMs",
 			"timeoutMs",
-			"priority",
 			"enabled",
 			"registers",
 		]

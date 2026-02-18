@@ -4,42 +4,28 @@ from django.contrib.auth.models import User
 
 
 class UserProfile(models.Model):
-    """Profile for employees (staff users)"""
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    """Profile for all users — role distinguishes admin, employee, and user"""
+
+    class Role(models.TextChoices):
+        ADMIN    = 'admin',    'Admin'
+        EMPLOYEE = 'employee', 'Employee'
+        USER     = 'user',     'User'
+
+    user          = models.OneToOneField(User, on_delete=models.CASCADE)
+    role          = models.CharField(max_length=16, choices=Role.choices, default=Role.USER)
     mobile_number = models.CharField(max_length=15, blank=True, null=True)
-    address = models.TextField(blank=True, null=True)
+    address       = models.TextField(blank=True, null=True)
+    created_at    = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"{self.user.username}'s profile"
 
 
-class Customer(models.Model):
-    """Solar system customers/device owners (separate from staff)"""
-    customer_id = models.CharField(max_length=64, unique=True)
-    first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
-    email = models.EmailField(unique=True)
-    mobile_number = models.CharField(max_length=15, blank=True, null=True)
-    address = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(default=timezone.now)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='customers_created')
-    updated_at = models.DateTimeField(auto_now=True)
-    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='customers_updated')
-    is_active = models.BooleanField(default=True)
-    notes = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.customer_id})"
-
-    class Meta:
-        ordering = ['-created_at']
 
 
 class Device(models.Model):
 	device_serial = models.CharField(max_length=64, unique=True)
-	customer = models.ForeignKey(Customer, related_name="devices", on_delete=models.CASCADE)
-	# Legacy field - will be removed after migration
-	user = models.ForeignKey(User, related_name="legacy_devices", on_delete=models.SET_NULL, null=True, blank=True)
+	owner = models.ForeignKey(User, related_name="devices", on_delete=models.SET_NULL, null=True, blank=True)
 	public_key_algorithm = models.CharField(max_length=32, blank=True, null=True)
 	csr_pem = models.TextField(blank=True, null=True)
 	provisioned_at = models.DateTimeField(default=timezone.now)

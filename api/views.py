@@ -21,7 +21,7 @@ from .serializers import (
     TelemetryDataSerializer,
     DeviceSerializer,
 )
-from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping, Customer
+from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping
 import logging
 import jwt
 import secrets
@@ -186,17 +186,6 @@ def provision(request: Any) -> Response:
     }
     token = jwt.encode(jwt_payload, DEVICE_JWT_SECRET, algorithm="HS256")
     
-    # Get or create default customer for unassigned devices
-    default_customer, _ = Customer.objects.get_or_create(
-        customer_id="UNASSIGNED",
-        defaults={
-            "first_name": "Unassigned",
-            "last_name": "Device",
-            "email": "unassigned@devices.local",
-            "notes": "Default customer for newly provisioned devices"
-        }
-    )
-    
     # Get or create system user for auto-provisioned devices (as staff/employee)
     system_user, _ = User.objects.get_or_create(
         username="system",
@@ -217,7 +206,6 @@ def provision(request: Any) -> Response:
     device, created = Device.objects.get_or_create(
         device_serial=device_id,
         defaults={
-            "customer": default_customer,
             "created_by": system_user
         }
     )
@@ -421,16 +409,13 @@ def devices_list(request: Any) -> Response:
         return Response({"error": "Invalid page or page_size parameter. Must be integers."}, status=status.HTTP_400_BAD_REQUEST)
     
     # Optimize query: only fetch related data we need (including audit fields)
-    devices = Device.objects.select_related('customer', 'user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
-    
+    devices = Device.objects.select_related('owner', 'created_by', 'updated_by').all().order_by("-provisioned_at")
+
     # Apply search filter
     if search:
         devices = devices.filter(
             Q(device_serial__icontains=search) |
-            Q(user__username__icontains=search) |
-            Q(customer__first_name__icontains=search) |
-            Q(customer__last_name__icontains=search) |
-            Q(customer__customer_id__icontains=search) |
+            Q(owner__username__icontains=search) |
             Q(config_version__icontains=search)
         )
     
@@ -449,16 +434,9 @@ def devices_list(request: Any) -> Response:
             "device_serial": device.device_serial,
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
-            "user": device.user.username if device.user else None,  # Legacy field
-            "customer": {
-                "id": device.customer.id,
-                "customer_id": device.customer.customer_id,
-                "name": f"{device.customer.first_name} {device.customer.last_name}",
-                "email": device.customer.email,
-            } if device.customer else None,
-            # Audit trail fields
+            "owner": device.owner.username if device.owner else None,
             "created_by_username": device.created_by.username if device.created_by else None,
-            "created_at": device.provisioned_at.isoformat(),  # Use provisioned_at as created_at
+            "created_at": device.provisioned_at.isoformat(),
             "updated_by_username": device.updated_by.username if device.updated_by else None,
             "updated_at": device.updated_at.isoformat() if device.updated_at else None,
         })
@@ -818,7 +796,9 @@ def get_current_user(request):
         'last_name': user.last_name,
         'mobile_number': profile.mobile_number,
         'address': profile.address,
+        'role': profile.role,
         'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
         'date_joined': user.date_joined,
     })
 
@@ -854,6 +834,7 @@ def users_list(request):
             'last_name': user.last_name,
             'mobile_number': profile.mobile_number if profile else None,
             'address': profile.address if profile else None,
+            'role': profile.role if profile else UserProfile.Role.USER,
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
             'date_joined': user.date_joined.isoformat(),
@@ -882,7 +863,10 @@ def create_user(request):
     last_name = request.data.get('last_name', '')
     mobile_number = request.data.get('mobile_number', '')
     address = request.data.get('address', '')
-    is_staff = request.data.get('is_staff', False)  # Get is_staff from request, default to False
+    is_staff = request.data.get('is_staff', False)
+    role = request.data.get('role', UserProfile.Role.USER)
+    if role not in UserProfile.Role.values:
+        role = UserProfile.Role.USER
 
     if not username or not email or not password:
         return Response(
@@ -919,7 +903,8 @@ def create_user(request):
         UserProfile.objects.create(
             user=user,
             mobile_number=mobile_number,
-            address=address
+            address=address,
+            role=role,
         )
 
         return Response({
@@ -930,6 +915,7 @@ def create_user(request):
             'last_name': user.last_name,
             'mobile_number': mobile_number,
             'address': address,
+            'role': role,
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
             'date_joined': user.date_joined.isoformat(),
@@ -964,8 +950,10 @@ def update_user(request, user_id):
     profile, created = UserProfile.objects.get_or_create(user=user)
     profile.mobile_number = request.data.get('mobile_number', profile.mobile_number)
     profile.address = request.data.get('address', profile.address)
+    if 'role' in request.data and request.data['role'] in UserProfile.Role.values:
+        profile.role = request.data['role']
     profile.save()
-    
+
     return Response({
         'id': user.id,
         'username': user.username,
@@ -974,6 +962,7 @@ def update_user(request, user_id):
         'last_name': user.last_name,
         'mobile_number': profile.mobile_number,
         'address': profile.address,
+        'role': profile.role,
         'date_joined': user.date_joined.isoformat(),
     })
 
@@ -1010,7 +999,7 @@ def get_user_devices(request, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
     
     # Get devices assigned to this user
-    devices = Device.objects.filter(user=user)
+    devices = Device.objects.filter(owner=user)
     
     device_list = []
     for device in devices:
@@ -1035,7 +1024,7 @@ def get_profile(request):
     user = request.user
     
     profile = getattr(user, 'userprofile', None)
-    
+
     return Response({
         'id': user.id,
         'username': user.username,
@@ -1044,6 +1033,7 @@ def get_profile(request):
         'last_name': user.last_name,
         'mobile_number': profile.mobile_number if profile else None,
         'address': profile.address if profile else None,
+        'role': profile.role if profile else UserProfile.Role.USER,
         'is_staff': user.is_staff,
         'is_superuser': user.is_superuser,
         'date_joined': user.date_joined.isoformat(),
@@ -1088,6 +1078,7 @@ def update_profile(request):
         'last_name': user.last_name,
         'mobile_number': profile.mobile_number,
         'address': profile.address,
+        'role': profile.role,
         'is_staff': user.is_staff,
         'is_superuser': user.is_superuser,
         'date_joined': user.date_joined.isoformat(),
@@ -1129,136 +1120,17 @@ def change_password(request):
     return Response({'message': 'Password changed successfully'})
 
 
-# ========== CUSTOMER MANAGEMENT ENDPOINTS ==========
-
-@api_view(['GET'])
-@permission_classes([IsStaffUser])
-def customers_list(request):
-    """
-    List all customers with optional search
-    Requires staff authentication
-    """
-    from .serializers import CustomerSerializer
-    from .models import Customer
-    from django.db.models import Q
-    
-    search = request.GET.get('search', '').strip()
-    customers = Customer.objects.select_related('created_by', 'updated_by').all()
-    
-    if search:
-        customers = customers.filter(
-            Q(customer_id__icontains=search) |
-            Q(first_name__icontains=search) |
-            Q(last_name__icontains=search) |
-            Q(email__icontains=search) |
-            Q(mobile_number__icontains=search)
-        )
-    
-    serializer = CustomerSerializer(customers, many=True)
-    return Response(serializer.data)
-
-
-@api_view(['POST'])
-@permission_classes([IsStaffUser])
-def create_customer(request):
-    """
-    Create a new customer
-    Requires staff authentication
-    """
-    from .serializers import CustomerSerializer
-    from .models import Customer
-    
-    # Auto-generate customer_id if not provided
-    if not request.data.get('customer_id'):
-        import uuid
-        request.data['customer_id'] = f"CUST{uuid.uuid4().hex[:8].upper()}"
-    
-    serializer = CustomerSerializer(data=request.data)
-    if serializer.is_valid():
-        instance = serializer.save()
-        # Set audit fields
-        set_audit_fields(instance, request)
-        instance.save()
-        return Response(CustomerSerializer(instance).data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['GET'])
-@permission_classes([IsStaffUser])
-def get_customer(request, customer_id):
-    """
-    Get a single customer by ID
-    Requires staff authentication
-    """
-    from .serializers import CustomerSerializer
-    from .models import Customer
-    
-    try:
-        customer = Customer.objects.get(id=customer_id)
-    except Customer.DoesNotExist:
-        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    serializer = CustomerSerializer(customer)
-    return Response(serializer.data)
-
-
-@api_view(['PUT'])
-@permission_classes([IsStaffUser])
-def update_customer(request, customer_id):
-    """
-    Update customer information
-    Requires staff authentication
-    """
-    from .serializers import CustomerSerializer
-    from .models import Customer
-    
-    try:
-        customer = Customer.objects.get(id=customer_id)
-    except Customer.DoesNotExist:
-        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    serializer = CustomerSerializer(customer, data=request.data, partial=True)
-    if serializer.is_valid():
-        instance = serializer.save()
-        # Set audit fields
-        set_audit_fields(instance, request)
-        instance.save()
-        return Response(CustomerSerializer(instance).data)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['DELETE'])
-@permission_classes([IsStaffUser])
-def delete_customer(request, customer_id):
-    """
-    Delete a customer (staff only)
-    """
-    from .models import Customer
-    
-    try:
-        customer = Customer.objects.get(id=customer_id)
-    except Customer.DoesNotExist:
-        return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Check if customer has devices
-    if customer.devices.exists():
-        return Response(
-            {'error': f'Cannot delete customer with {customer.devices.count()} devices. Remove devices first.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    customer.delete()
-    return Response({'message': 'Customer deleted successfully'})
 
 
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
 def presets_list(request):
-    configs = GatewayConfig.objects.select_related('created_by', 'updated_by').all().order_by('-updated_at')
+    from django.db.models import Count
+    configs = GatewayConfig.objects.select_related('created_by', 'updated_by').annotate(
+        slaves_count=Count('slaves')
+    ).order_by('-updated_at')
     data = []
     for config in configs:
-        slaves = SlaveDevice.objects.filter(gateway_config=config).count()
-
         # Format parity for display
         parity_display = {0: 'None', 1: 'Odd', 2: 'Even'}.get(config.parity, 'Unknown')
 
@@ -1266,7 +1138,7 @@ def presets_list(request):
             'id': config.id,
             'config_id': config.config_id,
             'name': config.name or config.config_id,
-            'description': f'Config with {slaves} slaves',
+            'description': f'Config with {config.slaves_count} slaves',
             'gateway_configuration': {
                 'general_settings': {
                     'config_id': config.config_id,
@@ -1280,7 +1152,7 @@ def presets_list(request):
                     'parity': parity_display,
                 }
             },
-            'slaves_count': slaves,
+            'slaves_count': config.slaves_count,
         })
     return Response(data)
 
@@ -1394,38 +1266,6 @@ def delete_preset(request, preset_id):
     return Response({'message': 'Preset deleted'})
 
 
-@api_view(['GET'])
-@permission_classes([IsStaffUser])
-def devices_list_legacy(request):
-    """Legacy endpoint - kept for backwards compatibility. Requires staff authentication."""
-    search = request.GET.get('search', '')
-    devices = Device.objects.select_related('customer', 'user').all().order_by('-provisioned_at')
-
-    if search:
-        devices = devices.filter(
-            Q(device_serial__icontains=search) |
-            Q(user__username__icontains=search) |
-            Q(customer__first_name__icontains=search) |
-            Q(customer__last_name__icontains=search) |
-            Q(config_version__icontains=search)
-        )
-
-    data = []
-    for device in devices:
-        data.append({
-            'id': device.id,
-            'device_serial': device.device_serial,
-            'user': device.user.username if device.user else None,
-            'provisioned_at': device.provisioned_at.isoformat(),
-            'config_version': device.config_version,
-            'customer': {
-                'id': device.customer.id,
-                'customer_id': device.customer.customer_id,
-                'name': f"{device.customer.first_name} {device.customer.last_name}",
-                'email': device.customer.email,
-            } if device.customer else None,
-        })
-    return Response(data)
 
 
 @api_view(['POST'])
@@ -1634,7 +1474,7 @@ def slaves_list(request, config_id):
     slaves = SlaveDevice.objects.filter(gateway_config=config).prefetch_related('registers')
     data = []
     for slave in slaves:
-        registers = RegisterMapping.objects.filter(slave=slave)
+        # Use prefetched registers instead of re-querying
         data.append({
             'id': slave.id,
             'slave_id': slave.slave_id,
@@ -1652,7 +1492,7 @@ def slaves_list(request, config_id):
                 'scale_factor': reg.scale_factor,
                 'offset': reg.offset,
                 'enabled': reg.enabled,
-            } for reg in registers]
+            } for reg in slave.registers.all()]
         })
     return Response(data)
 

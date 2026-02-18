@@ -6,38 +6,23 @@ from .models import (
 	SlaveDevice,
 	RegisterMapping,
 	TelemetryData,
-	Customer,
+	UserProfile,
 )
 
 
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-	list_display = ("device_serial", "customer", "provisioned_at", "config_version")
-	search_fields = ("device_serial", "customer__customer_id", "customer__first_name", "customer__last_name")
+	list_display = ("device_serial", "owner", "provisioned_at", "config_version")
+	search_fields = ("device_serial", "owner__username", "owner__email")
 	list_filter = ("provisioned_at",)
 
 
-@admin.register(Customer)
-class UserAdmin(admin.ModelAdmin):
-	list_display = ("customer_id", "first_name", "last_name", "email", "mobile_number", "created_at", "is_active")
-	search_fields = ("customer_id", "first_name", "last_name", "email", "mobile_number")
-	list_filter = ("is_active", "created_at")
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+	list_display = ("user", "role", "mobile_number", "created_at")
+	search_fields = ("user__username", "user__email", "mobile_number")
+	list_filter = ("role", "created_at")
 	readonly_fields = ("created_at",)
-	fieldsets = (
-		("Customer Information", {
-			"fields": ("customer_id", "first_name", "last_name", "email")
-		}),
-		("Contact Details", {
-			"fields": ("mobile_number", "address")
-		}),
-		("Status", {
-			"fields": ("is_active",)
-		}),
-		("Additional", {
-			"fields": ("notes", "created_at"),
-			"classes": ("collapse",)
-		}),
-	)
 
 
 # Unregister default User admin and register custom one
@@ -45,7 +30,7 @@ admin.site.unregister(User)
 
 
 @admin.register(User)
-class EmployeeAdmin(admin.ModelAdmin):
+class UserAdmin(admin.ModelAdmin):
 	list_display = ("username", "first_name", "last_name", "email", "is_staff", "is_superuser", "date_joined")
 	search_fields = ("username", "first_name", "last_name", "email")
 	list_filter = ("is_staff", "is_superuser", "is_active", "date_joined")
@@ -67,13 +52,6 @@ class EmployeeAdmin(admin.ModelAdmin):
 		}),
 	)
 	filter_horizontal = ("groups", "user_permissions")
-	
-	def get_queryset(self, request):
-		"""Show all staff users (employees) in the list"""
-		qs = super().get_queryset(request)
-		return qs.filter(is_staff=True)
-
-
 
 
 class RegisterMappingInline(admin.TabularInline):

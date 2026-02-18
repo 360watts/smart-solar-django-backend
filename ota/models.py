@@ -2,25 +2,32 @@ from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.conf import settings
+from django.utils.deconstruct import deconstructible
 from api.models import Device
 
 
+@deconstructible
 class FirmwareStorage:
     """
     Lazy storage wrapper that ensures we use the correct storage backend.
     Django's default_storage is initialized at import time, which can happen
     before settings are fully configured, causing it to use FileSystemStorage
     even when S3 is configured in settings.
+    
+    Made deconstructible for Django migrations serialization.
     """
     _storage = None
     
     def __call__(self):
-        if self._storage is None:
+        if FirmwareStorage._storage is None:
             from django.utils.module_loading import import_string
             storage_path = getattr(settings, 'DEFAULT_FILE_STORAGE', 'django.core.files.storage.FileSystemStorage')
             storage_class = import_string(storage_path)
-            self._storage = storage_class()
-        return self._storage
+            FirmwareStorage._storage = storage_class()
+        return FirmwareStorage._storage
+    
+    def __eq__(self, other):
+        return isinstance(other, FirmwareStorage)
 
 
 firmware_storage = FirmwareStorage()
@@ -36,7 +43,7 @@ class FirmwareVersion(models.Model):
     checksum = models.CharField(max_length=64, blank=True, null=True, help_text="SHA256 checksum")
     description = models.TextField(blank=True, null=True)
     release_notes = models.TextField(blank=True, null=True)
-    is_active = models.BooleanField(default=False, help_text="Only active versions are offered to devices")
+    is_active = models.BooleanField(default=False, db_index=True, help_text="Only active versions are offered to devices")
     created_at = models.DateTimeField(default=timezone.now)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='firmware_created')
     updated_at = models.DateTimeField(auto_now=True)
@@ -45,6 +52,9 @@ class FirmwareVersion(models.Model):
     class Meta:
         ordering = ['-created_at']
         verbose_name_plural = "Firmware Versions"
+        indexes = [
+            models.Index(fields=['is_active', '-created_at']),
+        ]
     
     def __str__(self):
         return f"Firmware {self.version} - {self.filename}"
@@ -107,3 +117,78 @@ class OTAConfig(models.Model):
     
     def __str__(self):
         return "OTA Configuration"
+
+
+class TargetedUpdate(models.Model):
+    """
+    Track targeted firmware updates for specific devices.
+    Allows three update modes:
+    - Single device: One device targeted
+    - Multiple devices: Multiple devices targeted
+    - Version-based: All devices with specific current firmware version
+    """
+    
+    class UpdateType(models.TextChoices):
+        SINGLE = 'single', 'Single Device'
+        MULTIPLE = 'multiple', 'Multiple Devices'
+        VERSION_BASED = 'version_based', 'Version Based'
+    
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        CANCELLED = 'cancelled', 'Cancelled'
+        FAILED = 'failed', 'Failed'
+    
+    update_type = models.CharField(max_length=20, choices=UpdateType.choices)
+    target_firmware = models.ForeignKey(FirmwareVersion, on_delete=models.CASCADE, related_name='targeted_updates')
+    
+    # For single and multiple device updates
+    target_devices = models.ManyToManyField(Device, related_name='targeted_updates', blank=True)
+    
+    # For version-based updates
+    source_version = models.CharField(max_length=32, blank=True, null=True, 
+        help_text="Current firmware version to target (for version-based updates)")
+    
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    devices_total = models.PositiveIntegerField(default=0)
+    devices_updated = models.PositiveIntegerField(default=0)
+    devices_failed = models.PositiveIntegerField(default=0)
+    
+    created_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='targeted_updates_created')
+    completed_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', '-created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.get_update_type_display()} Update to {self.target_firmware.version} ({self.status})"
+
+
+class DeviceTargetedFirmware(models.Model):
+    """
+    Individual device-level targeting for firmware updates.
+    When a device checks for OTA, if it has an active target, 
+    that specific firmware is offered instead of the global active firmware.
+    """
+    device = models.OneToOneField(Device, on_delete=models.CASCADE, related_name='targeted_firmware')
+    target_firmware = models.ForeignKey(FirmwareVersion, on_delete=models.CASCADE)
+    targeted_update = models.ForeignKey(TargetedUpdate, on_delete=models.CASCADE, null=True, blank=True, related_name='device_targets')
+    is_active = models.BooleanField(default=True, db_index=True, help_text="Whether this target is still active")
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Device Targeted Firmware"
+        verbose_name_plural = "Device Targeted Firmwares"
+        indexes = [
+            models.Index(fields=['is_active']),
+        ]
+    
+    def __str__(self):
+        return f"{self.device.device_serial} -> {self.target_firmware.version}"

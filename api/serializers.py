@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Customer, Alert
+from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Alert
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -28,59 +28,9 @@ class AlertSerializer(serializers.ModelSerializer):
             return None
 
 
-class CustomerSerializer(serializers.ModelSerializer):
-    device_count = serializers.SerializerMethodField()
-    created_by_username = serializers.SerializerMethodField()
-    updated_by_username = serializers.SerializerMethodField()
-    created_at = serializers.SerializerMethodField()
-    updated_at = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Customer
-        fields = ['id', 'customer_id', 'first_name', 'last_name', 'email', 
-                  'mobile_number', 'address', 'created_at', 'created_by_username',
-                  'updated_at', 'updated_by_username', 'is_active', 'notes', 'device_count']
-        read_only_fields = ['id', 'created_at', 'created_by_username',
-                           'updated_at', 'updated_by_username']
-    
-    def get_device_count(self, obj):
-        return obj.devices.count()
-    
-    def get_created_by_username(self, obj):
-        """Safely get created_by username, handling pre-migration state"""
-        try:
-            return obj.created_by.username if hasattr(obj, 'created_by') and obj.created_by else None
-        except AttributeError:
-            return None
-    
-    def get_updated_by_username(self, obj):
-        """Safely get updated_by username, handling pre-migration state"""
-        try:
-            return obj.updated_by.username if hasattr(obj, 'updated_by') and obj.updated_by else None
-        except AttributeError:
-            return None
-    
-    def get_created_at(self, obj):
-        """Safely get created_at, handling pre-migration state"""
-        try:
-            return obj.created_at if hasattr(obj, 'created_at') else None
-        except AttributeError:
-            return None
-    
-    def get_updated_at(self, obj):
-        """Safely get updated_at, handling pre-migration state"""
-        try:
-            return obj.updated_at if hasattr(obj, 'updated_at') else None
-        except AttributeError:
-            return None
-
-
 class DeviceSerializer(serializers.ModelSerializer):
-    customer_name = serializers.SerializerMethodField()
-    customer_id = serializers.CharField(source='customer.customer_id', read_only=True)
-    # User field - writable for backwards compatibility with legacy frontend
-    user = serializers.CharField(write_only=False, required=False, allow_blank=True)
-    # Audit trail fields
+    owner = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    owner_username = serializers.SerializerMethodField()
     created_by_username = serializers.SerializerMethodField()
     created_at = serializers.SerializerMethodField()
     updated_by_username = serializers.SerializerMethodField()
@@ -88,13 +38,13 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'customer_id', 'customer_name', 'user', 'provisioned_at', 'config_version',
+        fields = ['id', 'device_serial', 'owner', 'owner_username', 'provisioned_at', 'config_version',
                   'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
-        read_only_fields = ['id', 'provisioned_at', 'customer_id', 'customer_name']
-    
-    def get_customer_name(self, obj):
-        return f"{obj.customer.first_name} {obj.customer.last_name}"
-    
+        read_only_fields = ['id', 'provisioned_at', 'owner_username']
+
+    def get_owner_username(self, obj):
+        return obj.owner.username if obj.owner else None
+
     def get_created_by_username(self, obj):
         try:
             if hasattr(obj, 'created_by') and obj.created_by:
@@ -102,16 +52,15 @@ class DeviceSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         return None
-    
+
     def get_created_at(self, obj):
         try:
-            # Use provisioned_at as created_at since devices don't have a separate created_at field
             if hasattr(obj, 'provisioned_at') and obj.provisioned_at:
                 return obj.provisioned_at.isoformat()
         except AttributeError:
             pass
         return None
-    
+
     def get_updated_by_username(self, obj):
         try:
             if hasattr(obj, 'updated_by') and obj.updated_by:
@@ -119,7 +68,7 @@ class DeviceSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         return None
-    
+
     def get_updated_at(self, obj):
         try:
             if hasattr(obj, 'updated_at') and obj.updated_at:
@@ -129,82 +78,32 @@ class DeviceSerializer(serializers.ModelSerializer):
         return None
 
     def to_representation(self, instance):
-        """
-        Override representation to return username instead of customer_id for user field
-        """
         ret = super().to_representation(instance)
-        # Return username if user is assigned, otherwise return None
-        ret['user'] = instance.user.username if instance.user else None
+        ret['owner'] = instance.owner.username if instance.owner else None
         return ret
 
-    def validate_user(self, value):
-        """
-        Validate that the username exists and return the User object
-        """
+    def validate_owner(self, value):
         if not value:
-            # Allow empty/null user assignment
             return None
-        
         try:
-            user = User.objects.get(username=value)
-            return user
+            return User.objects.get(username=value)
         except User.DoesNotExist:
             raise serializers.ValidationError(f"User '{value}' does not exist")
 
     def create(self, validated_data):
-        # Extract user if provided
-        user = validated_data.pop('user', None)
-        
-        # Handle customer assignment if provided
-        customer_id = self.context.get('customer_id')
-        if customer_id:
-            try:
-                customer = Customer.objects.get(customer_id=customer_id)
-                validated_data['customer'] = customer
-            except Customer.DoesNotExist:
-                raise serializers.ValidationError({'customer': 'Customer not found'})
-        
-        # If no customer assigned, use or create default customer
-        if 'customer' not in validated_data:
-            from .models import Customer
-            default_customer, _ = Customer.objects.get_or_create(
-                customer_id="DEFAULT",
-                defaults={
-                    "first_name": "Unassigned",
-                    "last_name": "Devices",
-                    "email": "default@example.com",
-                    "notes": "Default customer for newly provisioned devices"
-                }
-            )
-            validated_data['customer'] = default_customer
-        
+        owner = validated_data.pop('owner', None)
         instance = super().create(validated_data)
-        
-        # Assign user if provided
-        if user:
-            instance.user = user
+        if owner:
+            instance.owner = owner
             instance.save()
-        
         return instance
 
     def update(self, instance, validated_data):
-        """
-        Update device, including user field
-        """
-        # Extract user if provided
-        user = validated_data.pop('user', None)
-        
-        # Update other fields
+        owner = validated_data.pop('owner', None)
         instance = super().update(instance, validated_data)
-        
-        # Update user if provided in request
-        if 'user' in self.initial_data:
-            if user:
-                instance.user = user
-            else:
-                instance.user = None
+        if 'owner' in self.initial_data:
+            instance.owner = owner
             instance.save()
-        
         return instance
 
 

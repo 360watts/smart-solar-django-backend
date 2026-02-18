@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig
+from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig, TargetedUpdate, DeviceTargetedFirmware
 from api.models import Device
 
 
@@ -74,3 +74,52 @@ class OTAConfigSerializer(serializers.ModelSerializer):
             'firmware_retention_days',
             'updated_at',
         ]
+
+
+class TargetedUpdateSerializer(serializers.ModelSerializer):
+    target_firmware_version = serializers.CharField(source='target_firmware.version', read_only=True)
+    target_firmware_id = serializers.PrimaryKeyRelatedField(
+        source='target_firmware', queryset=FirmwareVersion.objects.all(), write_only=True
+    )
+    target_device_serials = serializers.ListField(
+        child=serializers.CharField(), write_only=True, required=False
+    )
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    
+    class Meta:
+        model = TargetedUpdate
+        fields = [
+            'id',
+            'update_type',
+            'target_firmware_id',
+            'target_firmware_version',
+            'source_version',
+            'status',
+            'devices_total',
+            'devices_updated',
+            'devices_failed',
+            'created_at',
+            'created_by_username',
+            'completed_at',
+            'notes',
+            'target_device_serials',
+        ]
+        read_only_fields = ['id', 'status', 'devices_total', 'devices_updated', 'devices_failed', 
+                           'created_at', 'completed_at', 'created_by_username']
+
+
+class DeviceTargetedFirmwareSerializer(serializers.ModelSerializer):
+    device_serial = serializers.CharField(source='device.device_serial', read_only=True)
+    target_firmware_version = serializers.CharField(source='target_firmware.version', read_only=True)
+    
+    class Meta:
+        model = DeviceTargetedFirmware
+        fields = [
+            'id',
+            'device_serial',
+            'target_firmware_version',
+            'is_active',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields

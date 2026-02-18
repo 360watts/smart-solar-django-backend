@@ -21,6 +21,17 @@ urlpatterns = [
     path('config/', views.get_ota_config, name='get_ota_config'),
     path('config/update/', views.update_ota_config, name='update_ota_config'),
     
+    # Targeted OTA Updates - Three methods
+    path('updates/single/', views.trigger_single_device_update, name='trigger_single_update'),
+    path('updates/multiple/', views.trigger_multi_device_update, name='trigger_multi_update'),
+    path('updates/version-based/', views.trigger_version_based_update, name='trigger_version_update'),
+    path('updates/', views.list_targeted_updates, name='list_targeted_updates'),
+    path('updates/<int:update_id>/', views.get_targeted_update, name='get_targeted_update'),
+    path('updates/<int:update_id>/cancel/', views.cancel_targeted_update, name='cancel_targeted_update'),
+    
+    # Device firmware versions (for version-based update selection)
+    path('device-versions/', views.get_device_firmware_versions, name='device_firmware_versions'),
+    
     # Health check
     path('health/', views.ota_health, name='ota_health'),
 ]

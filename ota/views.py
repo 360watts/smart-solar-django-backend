@@ -9,12 +9,13 @@ from django.conf import settings
 from django.urls import reverse
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db import models as db_models
 import os
 import hashlib
 import logging
 
 from api.models import Device
-from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig
+from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig, DeviceTargetedFirmware
 from .serializers import (
     OTACheckSerializer,
     OTAResponseSerializer,
@@ -82,29 +83,23 @@ def ota_check(request, device_id):
         update_log.last_checked_at = timezone.now()
         update_log.attempt_count += 1
         
-        # Parse request data
-        if request.method == 'POST':
-            data = request.data if hasattr(request, 'data') else request.POST.dict()
+        # Check for device-specific firmware target first (targeted update)
+        targeted_firmware = None
+        try:
+            device_target = DeviceTargetedFirmware.objects.select_related('target_firmware').get(
+                device=device, is_active=True
+            )
+            targeted_firmware = device_target.target_firmware
+            logger.info(f"OTA Check - Device {device_id} has targeted firmware: {targeted_firmware.version}")
+        except DeviceTargetedFirmware.DoesNotExist:
+            pass
+        
+        # If device has a specific target, use that; otherwise use global active firmware
+        if targeted_firmware:
+            latest_firmware = targeted_firmware
         else:
-            data = request.GET.dict()
-        
-        current_firmware = data.get('firmware_version', '0x00010000')
-        config_version = data.get('config_version', '')
-        
-        # Log the check request
-        logger.info(f"OTA Check - Device: {device_id}, Current FW: {current_firmware}")
-        
-        # Get or create update log
-        update_log, created = DeviceUpdateLog.objects.get_or_create(
-            device=device,
-            current_firmware=current_firmware,
-            defaults={'status': DeviceUpdateLog.Status.CHECKING}
-        )
-        update_log.last_checked_at = timezone.now()
-        update_log.attempt_count += 1
-        
-        # Find latest active firmware
-        latest_firmware = FirmwareVersion.objects.filter(is_active=True).order_by('-created_at').first()
+            # Find latest active firmware
+            latest_firmware = FirmwareVersion.objects.filter(is_active=True).order_by('-created_at').first()
         
         if not latest_firmware:
             # No firmware available
@@ -124,6 +119,25 @@ def ota_check(request, device_id):
             # Device is up to date
             update_log.status = DeviceUpdateLog.Status.COMPLETED
             update_log.save()
+            
+            # If device target exists and device is now up to date, mark as complete
+            if targeted_firmware:
+                try:
+                    device_target = DeviceTargetedFirmware.objects.get(device=device, is_active=True)
+                    device_target.is_active = False  # Mark target as fulfilled
+                    device_target.save()
+                    
+                    # Update the targeted update campaign counts
+                    if device_target.targeted_update:
+                        campaign = device_target.targeted_update
+                        campaign.devices_updated += 1
+                        if campaign.devices_updated >= campaign.devices_total:
+                            campaign.status = 'completed'
+                            campaign.completed_at = timezone.now()
+                        campaign.save()
+                        logger.info(f"Device {device_id} completed targeted update to {latest_firmware.version}")
+                except DeviceTargetedFirmware.DoesNotExist:
+                    pass
             
             return Response({
                 'id': 'none',
@@ -229,17 +243,19 @@ def ota_download(request, firmware_id):
         # Log download attempt
         device_serial = request.query_params.get('device', 'unknown')
         
-        # Update log if device is known
+        # Update log if device is known - using bulk_update for efficiency
         if device_serial != 'unknown':
             try:
-                update_logs = DeviceUpdateLog.objects.filter(
+                update_logs = list(DeviceUpdateLog.objects.filter(
                     firmware_version=firmware,
                     device__device_serial=device_serial
-                )
-                for log in update_logs:
-                    log.status = DeviceUpdateLog.Status.DOWNLOADING
-                    log.started_at = timezone.now()
-                    log.save()
+                ))
+                if update_logs:
+                    now = timezone.now()
+                    for log in update_logs:
+                        log.status = DeviceUpdateLog.Status.DOWNLOADING
+                        log.started_at = now
+                    DeviceUpdateLog.objects.bulk_update(update_logs, ['status', 'started_at'])
             except:
                 pass
         
@@ -597,3 +613,384 @@ def ota_health(request):
             'service': 'OTA',
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ==================== TARGETED OTA UPDATE ENDPOINTS ====================
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def trigger_single_device_update(request):
+    """
+    Trigger OTA update for a single device
+    
+    Request body:
+    {
+        "device_serial": "STM32-001",
+        "firmware_id": 5,
+        "notes": "Optional notes"
+    }
+    """
+    from .models import TargetedUpdate, DeviceTargetedFirmware
+    from .serializers import TargetedUpdateSerializer
+    
+    try:
+        device_serial = request.data.get('device_serial')
+        firmware_id = request.data.get('firmware_id')
+        notes = request.data.get('notes', '')
+        
+        if not device_serial or not firmware_id:
+            return Response(
+                {'error': 'device_serial and firmware_id are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate device exists
+        try:
+            device = Device.objects.get(device_serial=device_serial)
+        except Device.DoesNotExist:
+            return Response(
+                {'error': f'Device {device_serial} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Validate firmware exists and is active
+        try:
+            firmware = FirmwareVersion.objects.get(id=firmware_id)
+        except FirmwareVersion.DoesNotExist:
+            return Response(
+                {'error': f'Firmware ID {firmware_id} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Create targeted update record
+        targeted_update = TargetedUpdate.objects.create(
+            update_type=TargetedUpdate.UpdateType.SINGLE,
+            target_firmware=firmware,
+            status=TargetedUpdate.Status.PENDING,
+            devices_total=1,
+            created_by=request.user,
+            notes=notes
+        )
+        targeted_update.target_devices.add(device)
+        
+        # Create or update device-level firmware target
+        DeviceTargetedFirmware.objects.update_or_create(
+            device=device,
+            defaults={
+                'target_firmware': firmware,
+                'targeted_update': targeted_update,
+                'is_active': True
+            }
+        )
+        
+        targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
+        targeted_update.save()
+        
+        logger.info(
+            f"Single Device Update Triggered - Device: {device_serial}, "
+            f"Firmware: {firmware.version}, By: {request.user.username}"
+        )
+        
+        serializer = TargetedUpdateSerializer(targeted_update)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.error(f"Single Device Update Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to trigger update: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def trigger_multi_device_update(request):
+    """
+    Trigger OTA update for multiple devices
+    
+    Request body:
+    {
+        "device_serials": ["STM32-001", "STM32-002", "STM32-003"],
+        "firmware_id": 5,
+        "notes": "Optional notes"
+    }
+    """
+    from .models import TargetedUpdate, DeviceTargetedFirmware
+    from .serializers import TargetedUpdateSerializer
+    
+    try:
+        device_serials = request.data.get('device_serials', [])
+        firmware_id = request.data.get('firmware_id')
+        notes = request.data.get('notes', '')
+        
+        if not device_serials or not firmware_id:
+            return Response(
+                {'error': 'device_serials (list) and firmware_id are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not isinstance(device_serials, list) or len(device_serials) == 0:
+            return Response(
+                {'error': 'device_serials must be a non-empty list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate firmware exists
+        try:
+            firmware = FirmwareVersion.objects.get(id=firmware_id)
+        except FirmwareVersion.DoesNotExist:
+            return Response(
+                {'error': f'Firmware ID {firmware_id} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Find valid devices
+        devices = Device.objects.filter(device_serial__in=device_serials)
+        found_serials = set(devices.values_list('device_serial', flat=True))
+        missing_serials = set(device_serials) - found_serials
+        
+        if not devices.exists():
+            return Response(
+                {'error': 'No valid devices found', 'missing_devices': list(missing_serials)},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Create targeted update record
+        targeted_update = TargetedUpdate.objects.create(
+            update_type=TargetedUpdate.UpdateType.MULTIPLE,
+            target_firmware=firmware,
+            status=TargetedUpdate.Status.PENDING,
+            devices_total=devices.count(),
+            created_by=request.user,
+            notes=notes
+        )
+        targeted_update.target_devices.set(devices)
+        
+        # Create device-level firmware targets for each device
+        for device in devices:
+            DeviceTargetedFirmware.objects.update_or_create(
+                device=device,
+                defaults={
+                    'target_firmware': firmware,
+                    'targeted_update': targeted_update,
+                    'is_active': True
+                }
+            )
+        
+        targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
+        targeted_update.save()
+        
+        logger.info(
+            f"Multi-Device Update Triggered - Devices: {devices.count()}, "
+            f"Firmware: {firmware.version}, By: {request.user.username}"
+        )
+        
+        response_data = TargetedUpdateSerializer(targeted_update).data
+        if missing_serials:
+            response_data['warning'] = f'{len(missing_serials)} devices not found'
+            response_data['missing_devices'] = list(missing_serials)
+        
+        return Response(response_data, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.error(f"Multi-Device Update Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to trigger update: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def trigger_version_based_update(request):
+    """
+    Trigger OTA update for all devices on a specific firmware version
+    
+    Request body:
+    {
+        "source_version": "0x00010000",  # Current firmware version to target
+        "firmware_id": 5,                 # Target firmware to update to
+        "notes": "Optional notes"
+    }
+    """
+    from .models import TargetedUpdate, DeviceTargetedFirmware
+    from .serializers import TargetedUpdateSerializer
+    
+    try:
+        source_version = request.data.get('source_version')
+        firmware_id = request.data.get('firmware_id')
+        notes = request.data.get('notes', '')
+        
+        if not source_version or not firmware_id:
+            return Response(
+                {'error': 'source_version and firmware_id are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate firmware exists
+        try:
+            firmware = FirmwareVersion.objects.get(id=firmware_id)
+        except FirmwareVersion.DoesNotExist:
+            return Response(
+                {'error': f'Firmware ID {firmware_id} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Find devices on the source version by checking their latest update log
+        # or use DeviceUpdateLog to find devices that last reported this version
+        devices_on_version = Device.objects.filter(
+            update_logs__current_firmware=source_version
+        ).distinct()
+        
+        if not devices_on_version.exists():
+            return Response(
+                {'error': f'No devices found with firmware version {source_version}',
+                 'message': 'Devices must have checked for updates at least once to be tracked'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Create targeted update record
+        targeted_update = TargetedUpdate.objects.create(
+            update_type=TargetedUpdate.UpdateType.VERSION_BASED,
+            target_firmware=firmware,
+            source_version=source_version,
+            status=TargetedUpdate.Status.PENDING,
+            devices_total=devices_on_version.count(),
+            created_by=request.user,
+            notes=notes
+        )
+        targeted_update.target_devices.set(devices_on_version)
+        
+        # Create device-level firmware targets
+        for device in devices_on_version:
+            DeviceTargetedFirmware.objects.update_or_create(
+                device=device,
+                defaults={
+                    'target_firmware': firmware,
+                    'targeted_update': targeted_update,
+                    'is_active': True
+                }
+            )
+        
+        targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
+        targeted_update.save()
+        
+        logger.info(
+            f"Version-Based Update Triggered - Source: {source_version}, "
+            f"Target: {firmware.version}, Devices: {devices_on_version.count()}, "
+            f"By: {request.user.username}"
+        )
+        
+        serializer = TargetedUpdateSerializer(targeted_update)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.error(f"Version-Based Update Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to trigger update: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_targeted_updates(request):
+    """List all targeted update campaigns"""
+    from .models import TargetedUpdate
+    from .serializers import TargetedUpdateSerializer
+    
+    status_filter = request.query_params.get('status', None)
+    update_type = request.query_params.get('type', None)
+    
+    updates = TargetedUpdate.objects.all()
+    
+    if status_filter:
+        updates = updates.filter(status=status_filter)
+    if update_type:
+        updates = updates.filter(update_type=update_type)
+    
+    serializer = TargetedUpdateSerializer(updates, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_targeted_update(request, update_id):
+    """Get details of a targeted update campaign"""
+    from .models import TargetedUpdate
+    from .serializers import TargetedUpdateSerializer, DeviceTargetedFirmwareSerializer
+    
+    try:
+        update = TargetedUpdate.objects.get(id=update_id)
+        data = TargetedUpdateSerializer(update).data
+        
+        # Include list of targeted devices
+        data['target_devices'] = [
+            {
+                'device_serial': d.device_serial,
+                'has_updated': DeviceUpdateLog.objects.filter(
+                    device=d,
+                    firmware_version=update.target_firmware,
+                    status=DeviceUpdateLog.Status.COMPLETED
+                ).exists()
+            }
+            for d in update.target_devices.all()
+        ]
+        
+        return Response(data)
+    except TargetedUpdate.DoesNotExist:
+        return Response(
+            {'error': 'Targeted update not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def cancel_targeted_update(request, update_id):
+    """Cancel a targeted update campaign"""
+    from .models import TargetedUpdate, DeviceTargetedFirmware
+    
+    try:
+        update = TargetedUpdate.objects.get(id=update_id)
+        
+        if update.status in [TargetedUpdate.Status.COMPLETED, TargetedUpdate.Status.CANCELLED]:
+            return Response(
+                {'error': f'Cannot cancel update with status: {update.status}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Remove device-level targets for this campaign
+        DeviceTargetedFirmware.objects.filter(targeted_update=update).delete()
+        
+        update.status = TargetedUpdate.Status.CANCELLED
+        update.save()
+        
+        logger.info(f"Targeted Update Cancelled - ID: {update_id}, By: {request.user.username}")
+        
+        return Response({'message': 'Update cancelled successfully', 'id': update_id})
+    except TargetedUpdate.DoesNotExist:
+        return Response(
+            {'error': 'Targeted update not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_device_firmware_versions(request):
+    """
+    Get list of unique firmware versions currently in use by devices
+    Useful for version-based update selection
+    """
+    versions = DeviceUpdateLog.objects.values('current_firmware').annotate(
+        device_count=db_models.Count('device', distinct=True)
+    ).order_by('-device_count')
+    
+    return Response([
+        {
+            'version': v['current_firmware'],
+            'device_count': v['device_count']
+        }
+        for v in versions
+    ])

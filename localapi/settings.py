@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 from decouple import config
 import dj_database_url
-import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,7 +23,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me')
+# In production, this MUST be set via environment variable
+_secret_key = config('SECRET_KEY', default='')
+if not _secret_key:
+    import warnings
+    warnings.warn(
+        "SECRET_KEY environment variable not set. Using insecure default for development only.",
+        UserWarning
+    )
+    _secret_key = 'django-insecure-development-only-key-change-in-production'
+SECRET_KEY = _secret_key
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=False, cast=bool)
@@ -341,7 +349,16 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Cache Configuration
-# Using dummy cache for Vercel (no persistent cache needed in serverless)
+# Using dummy cache for Vercel serverless (no persistent cache available)
+# For rate limiting to work, you need Redis or another persistent cache:
+# pip install django-redis
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django_redis.cache.RedisCache',
+#         'LOCATION': config('REDIS_URL', default='redis://localhost:6379/0'),
+#         'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'}
+#     }
+# }
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
@@ -350,7 +367,9 @@ CACHES = {
 
 # django-ratelimit configuration
 RATELIMIT_VIEW_PREFIX = 'api:'
-RATELIMIT_ENABLE = False  # Disable rate limiting in production for now
+# Rate limiting disabled in serverless - requires persistent cache (Redis)
+# Enable this when you have a Redis connection configured
+RATELIMIT_ENABLE = config('RATELIMIT_ENABLE', default=False, cast=bool)
 
 # REST Framework settings
 REST_FRAMEWORK = {

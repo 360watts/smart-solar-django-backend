@@ -1866,6 +1866,68 @@ def delete_slave(request, config_id, slave_id):
     return Response({'message': 'Slave deleted successfully'})
 
 
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def detach_slave_from_preset(request, config_id, slave_id):
+    """
+    Detach a slave from a preset without deleting the slave (set gateway_config to NULL).
+    Requires staff authentication.
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        slave = SlaveDevice.objects.get(gateway_config=config, slave_id=slave_id)
+    except SlaveDevice.DoesNotExist:
+        return Response({'error': 'Slave not found for this configuration'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Detach by setting gateway_config to None
+    slave.gateway_config = None
+    slave.save(update_fields=['gateway_config'])
+
+    return Response({'message': 'Slave detached from preset', 'id': slave.id, 'slave_id': slave.slave_id})
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def add_slaves_to_preset(request, config_id):
+    """
+    Attach existing global slaves to a preset by setting their gateway_config FK.
+    Expects JSON: { "slave_ids": [1,2,3] }
+    Requires staff authentication.
+    """
+    try:
+        config = GatewayConfig.objects.get(config_id=config_id)
+    except GatewayConfig.DoesNotExist:
+        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    slave_ids = request.data.get('slave_ids', [])
+    if not isinstance(slave_ids, list):
+        return Response({'error': 'slave_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+
+    slaves = SlaveDevice.objects.filter(id__in=slave_ids)
+    updated = []
+    for slave in slaves:
+        slave.gateway_config = config
+        slave.save()
+        updated.append({
+            'id': slave.id,
+            'slave_id': slave.slave_id,
+            'device_name': slave.device_name,
+            'polling_interval_ms': slave.polling_interval_ms,
+            'timeout_ms': slave.timeout_ms,
+            'priority': slave.priority,
+            'enabled': slave.enabled,
+            'registers': [_register_to_dict(reg) for reg in slave.registers.all()],
+            'config_id': config.config_id,
+            'config_name': config.name if hasattr(config, 'name') else None,
+        })
+
+    return Response({'updated': updated}, status=status.HTTP_200_OK)
+
+
 # ============== Health Check Endpoint ==============
 
 @api_view(['GET'])

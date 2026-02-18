@@ -46,8 +46,11 @@ urlpatterns = [
 	path("slaves/<int:slave_pk>/delete/", views.global_slave_delete, name="global_slave_delete"),
 	path("presets/<str:config_id>/slaves/", views.slaves_list, name="slaves_list"),
 	path("presets/<str:config_id>/slaves/create/", views.create_slave, name="create_slave"),
+	# Attach existing global slaves to a preset
+	path("presets/<str:config_id>/slaves/add/", views.add_slaves_to_preset, name="add_slaves_to_preset"),
 	path("presets/<str:config_id>/slaves/<int:slave_id>/", views.update_slave, name="update_slave"),
 	path("presets/<str:config_id>/slaves/<int:slave_id>/delete/", views.delete_slave, name="delete_slave"),
+	path("presets/<str:config_id>/slaves/<int:slave_id>/detach/", views.detach_slave_from_preset, name="detach_slave_from_preset"),
 	
 	# Alert management endpoints (persistent alerts)
 	path("alerts/manage/", views.alerts_crud, name="alerts_crud"),

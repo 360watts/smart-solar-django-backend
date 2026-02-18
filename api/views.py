@@ -460,13 +460,16 @@ def devices_list(request: Any) -> Response:
 @permission_classes([IsStaffUser])
 def config_get(request: Any) -> Response:
     """
-    Get gateway configuration for React frontend
-    Requires staff authentication
+    Get gateway configuration for React frontend.
+    Returns 200 with {} when no configuration exists so the browser
+    does not log a 404 network error. The frontend checks data?.configId
+    and switches to global mode when the response is empty.
+    Requires staff authentication.
     """
     config = GatewayConfig.objects.order_by("-updated_at").first()
     if not config:
-        return Response({"error": "No configuration available"}, status=status.HTTP_404_NOT_FOUND)
-    
+        return Response({})
+
     return Response(GatewayConfigSerializer(config).data)
 
 

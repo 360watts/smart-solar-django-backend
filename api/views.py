@@ -1459,6 +1459,31 @@ def delete_devices_bulk(request):
         )
 
 
+def _register_to_dict(reg):
+    """Serialize a RegisterMapping instance to a dict for API responses."""
+    return {
+        'id': reg.id,
+        'label': reg.label,
+        'address': reg.address,
+        'num_registers': reg.num_registers,
+        'function_code': reg.function_code,
+        'register_type': reg.register_type,
+        'data_type': reg.data_type,
+        'byte_order': reg.byte_order,
+        'word_order': reg.word_order,
+        'access_mode': reg.access_mode,
+        'scale_factor': reg.scale_factor,
+        'offset': reg.offset,
+        'unit': reg.unit,
+        'decimal_places': reg.decimal_places,
+        'category': reg.category,
+        'high_alarm_threshold': reg.high_alarm_threshold,
+        'low_alarm_threshold': reg.low_alarm_threshold,
+        'description': reg.description,
+        'enabled': reg.enabled,
+    }
+
+
 @api_view(['GET'])
 @permission_classes([IsStaffUser])
 def slaves_list(request, config_id):
@@ -1474,25 +1499,15 @@ def slaves_list(request, config_id):
     slaves = SlaveDevice.objects.filter(gateway_config=config).prefetch_related('registers')
     data = []
     for slave in slaves:
-        # Use prefetched registers instead of re-querying
         data.append({
             'id': slave.id,
             'slave_id': slave.slave_id,
             'device_name': slave.device_name,
             'polling_interval_ms': slave.polling_interval_ms,
             'timeout_ms': slave.timeout_ms,
+            'priority': slave.priority,
             'enabled': slave.enabled,
-            'registers': [{
-                'id': reg.id,
-                'label': reg.label,
-                'address': reg.address,
-                'num_registers': reg.num_registers,
-                'function_code': reg.function_code,
-                'data_type': reg.data_type,
-                'scale_factor': reg.scale_factor,
-                'offset': reg.offset,
-                'enabled': reg.enabled,
-            } for reg in slave.registers.all()]
+            'registers': [_register_to_dict(reg) for reg in slave.registers.all()]
         })
     return Response(data)
 
@@ -1513,6 +1528,7 @@ def create_slave(request, config_id):
     device_name = request.data.get('device_name')
     polling_interval_ms = request.data.get('polling_interval_ms', 5000)
     timeout_ms = request.data.get('timeout_ms', 1000)
+    priority = request.data.get('priority', 1)
     enabled = request.data.get('enabled', True)
     registers_data = request.data.get('registers', [])
 
@@ -1530,6 +1546,7 @@ def create_slave(request, config_id):
             device_name=device_name,
             polling_interval_ms=polling_interval_ms,
             timeout_ms=timeout_ms,
+            priority=priority,
             enabled=enabled
         )
 
@@ -1542,22 +1559,22 @@ def create_slave(request, config_id):
                 address=reg_data.get('address', 0),
                 num_registers=reg_data.get('num_registers', 1),
                 function_code=reg_data.get('function_code', 3),
+                register_type=reg_data.get('register_type', 3),
                 data_type=reg_data.get('data_type', 0),
+                byte_order=reg_data.get('byte_order', 0),
+                word_order=reg_data.get('word_order', 0),
+                access_mode=reg_data.get('access_mode', 0),
                 scale_factor=reg_data.get('scale_factor', 1.0),
                 offset=reg_data.get('offset', 0.0),
+                unit=reg_data.get('unit') or None,
+                decimal_places=reg_data.get('decimal_places', 2),
+                category=reg_data.get('category') or None,
+                high_alarm_threshold=reg_data.get('high_alarm_threshold'),
+                low_alarm_threshold=reg_data.get('low_alarm_threshold'),
+                description=reg_data.get('description') or None,
                 enabled=reg_data.get('enabled', True)
             )
-            registers.append({
-                'id': register.id,
-                'label': register.label,
-                'address': register.address,
-                'num_registers': register.num_registers,
-                'function_code': register.function_code,
-                'data_type': register.data_type,
-                'scale_factor': register.scale_factor,
-                'offset': register.offset,
-                'enabled': register.enabled,
-            })
+            registers.append(_register_to_dict(register))
 
         return Response({
             'id': slave.id,
@@ -1565,6 +1582,7 @@ def create_slave(request, config_id):
             'device_name': slave.device_name,
             'polling_interval_ms': slave.polling_interval_ms,
             'timeout_ms': slave.timeout_ms,
+            'priority': slave.priority,
             'enabled': slave.enabled,
             'registers': registers
         }, status=status.HTTP_201_CREATED)
@@ -1588,16 +1606,12 @@ def update_slave(request, config_id, slave_id):
     except SlaveDevice.DoesNotExist:
         return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    device_name = request.data.get('device_name', slave.device_name)
-    polling_interval_ms = request.data.get('polling_interval_ms', slave.polling_interval_ms)
-    timeout_ms = request.data.get('timeout_ms', slave.timeout_ms)
-    enabled = request.data.get('enabled', slave.enabled)
+    slave.device_name = request.data.get('device_name', slave.device_name)
+    slave.polling_interval_ms = request.data.get('polling_interval_ms', slave.polling_interval_ms)
+    slave.timeout_ms = request.data.get('timeout_ms', slave.timeout_ms)
+    slave.priority = request.data.get('priority', slave.priority)
+    slave.enabled = request.data.get('enabled', slave.enabled)
     registers_data = request.data.get('registers', [])
-
-    slave.device_name = device_name
-    slave.polling_interval_ms = polling_interval_ms
-    slave.timeout_ms = timeout_ms
-    slave.enabled = enabled
     slave.save()
 
     # Update registers - delete existing and create new ones
@@ -1610,22 +1624,22 @@ def update_slave(request, config_id, slave_id):
             address=reg_data.get('address', 0),
             num_registers=reg_data.get('num_registers', 1),
             function_code=reg_data.get('function_code', 3),
+            register_type=reg_data.get('register_type', 3),
             data_type=reg_data.get('data_type', 0),
+            byte_order=reg_data.get('byte_order', 0),
+            word_order=reg_data.get('word_order', 0),
+            access_mode=reg_data.get('access_mode', 0),
             scale_factor=reg_data.get('scale_factor', 1.0),
             offset=reg_data.get('offset', 0.0),
+            unit=reg_data.get('unit') or None,
+            decimal_places=reg_data.get('decimal_places', 2),
+            category=reg_data.get('category') or None,
+            high_alarm_threshold=reg_data.get('high_alarm_threshold'),
+            low_alarm_threshold=reg_data.get('low_alarm_threshold'),
+            description=reg_data.get('description') or None,
             enabled=reg_data.get('enabled', True)
         )
-        registers.append({
-            'id': register.id,
-            'label': register.label,
-            'address': register.address,
-            'num_registers': register.num_registers,
-            'function_code': register.function_code,
-            'data_type': register.data_type,
-            'scale_factor': register.scale_factor,
-            'offset': register.offset,
-            'enabled': register.enabled,
-        })
+        registers.append(_register_to_dict(register))
 
     return Response({
         'id': slave.id,
@@ -1633,6 +1647,7 @@ def update_slave(request, config_id, slave_id):
         'device_name': slave.device_name,
         'polling_interval_ms': slave.polling_interval_ms,
         'timeout_ms': slave.timeout_ms,
+        'priority': slave.priority,
         'enabled': slave.enabled,
         'registers': registers
     })

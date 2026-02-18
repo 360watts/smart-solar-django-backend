@@ -108,6 +108,19 @@ class DeviceSerializer(serializers.ModelSerializer):
 
 
 class RegisterMappingSerializer(serializers.ModelSerializer):
+	# Renamed fields to match firmware expectation (camelCase)
+	numRegisters = serializers.IntegerField(source="num_registers")
+	functionCode = serializers.IntegerField(source="function_code")
+	registerType = serializers.IntegerField(source="register_type")
+	dataType = serializers.IntegerField(source="data_type")
+	byteOrder = serializers.IntegerField(source="byte_order")
+	wordOrder = serializers.IntegerField(source="word_order")
+	accessMode = serializers.IntegerField(source="access_mode")
+	scaleFactor = serializers.FloatField(source="scale_factor")
+	decimalPlaces = serializers.IntegerField(source="decimal_places")
+	highAlarmThreshold = serializers.FloatField(source="high_alarm_threshold", allow_null=True)
+	lowAlarmThreshold = serializers.FloatField(source="low_alarm_threshold", allow_null=True)
+
 	class Meta:
 		model = RegisterMapping
 		fields = [
@@ -115,21 +128,29 @@ class RegisterMappingSerializer(serializers.ModelSerializer):
 			"address",
 			"numRegisters",
 			"functionCode",
+			"registerType",
 			"dataType",
+			"byteOrder",
+			"wordOrder",
+			"accessMode",
 			"scaleFactor",
 			"offset",
+			"unit",
+			"decimalPlaces",
+			"category",
+			"highAlarmThreshold",
+			"lowAlarmThreshold",
+			"description",
 			"enabled",
 		]
-
-	# rename fields for response to match firmware expectation
-	numRegisters = serializers.IntegerField(source="num_registers")
-	functionCode = serializers.IntegerField(source="function_code")
-	dataType = serializers.IntegerField(source="data_type")
-	scaleFactor = serializers.FloatField(source="scale_factor")
 
 
 class SlaveDeviceSerializer(serializers.ModelSerializer):
 	registers = RegisterMappingSerializer(many=True)
+	slaveId = serializers.IntegerField(source="slave_id")
+	deviceName = serializers.CharField(source="device_name")
+	pollingIntervalMs = serializers.IntegerField(source="polling_interval_ms")
+	timeoutMs = serializers.IntegerField(source="timeout_ms")
 
 	class Meta:
 		model = SlaveDevice
@@ -138,14 +159,10 @@ class SlaveDeviceSerializer(serializers.ModelSerializer):
 			"deviceName",
 			"pollingIntervalMs",
 			"timeoutMs",
+			"priority",
 			"enabled",
 			"registers",
 		]
-
-	slaveId = serializers.IntegerField(source="slave_id")
-	deviceName = serializers.CharField(source="device_name")
-	pollingIntervalMs = serializers.IntegerField(source="polling_interval_ms")
-	timeoutMs = serializers.IntegerField(source="timeout_ms")
 
 
 class GatewayConfigSerializer(serializers.ModelSerializer):

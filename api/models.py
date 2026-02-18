@@ -61,6 +61,7 @@ class SlaveDevice(models.Model):
 	device_name = models.CharField(max_length=64)
 	polling_interval_ms = models.PositiveIntegerField(default=5000)
 	timeout_ms = models.PositiveIntegerField(default=1000)
+	priority = models.PositiveSmallIntegerField(default=1)  # 1=Highest, 10=Lowest
 	enabled = models.BooleanField(default=True)
 
 	class Meta:
@@ -77,9 +78,19 @@ class RegisterMapping(models.Model):
 	address = models.PositiveIntegerField()
 	num_registers = models.PositiveSmallIntegerField(default=1)
 	function_code = models.PositiveSmallIntegerField(default=3)
-	data_type = models.PositiveSmallIntegerField(default=0)  # see doc mapping
+	register_type = models.PositiveSmallIntegerField(default=3)  # 0=Coil,1=Discrete Input,2=Input Reg,3=Holding Reg
+	data_type = models.PositiveSmallIntegerField(default=0)  # 0=UINT16,1=INT16,2=UINT32,3=INT32,4=FLOAT32,5=UINT64,6=INT64,7=FLOAT64,8=BOOL,9=STRING
+	byte_order = models.PositiveSmallIntegerField(default=0)  # 0=Big Endian (ABCD),1=Little Endian (DCBA)
+	word_order = models.PositiveSmallIntegerField(default=0)  # 0=Big (AB CD),1=Little (CD AB),2=Mid-Big (BA DC),3=Mid-Little (DC BA)
+	access_mode = models.PositiveSmallIntegerField(default=0)  # 0=Read Only,1=Read/Write,2=Write Only
 	scale_factor = models.FloatField(default=1.0)
 	offset = models.FloatField(default=0.0)
+	unit = models.CharField(max_length=16, blank=True, null=True)
+	decimal_places = models.PositiveSmallIntegerField(default=2)
+	category = models.CharField(max_length=32, blank=True, null=True)  # Electrical,Temperature,Status,Control,Energy,Power,Other
+	high_alarm_threshold = models.FloatField(null=True, blank=True)
+	low_alarm_threshold = models.FloatField(null=True, blank=True)
+	description = models.TextField(blank=True, null=True)
 	enabled = models.BooleanField(default=True)
 
 	class Meta:

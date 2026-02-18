@@ -1497,6 +1497,7 @@ def global_slaves_list(request):
     slaves = SlaveDevice.objects.select_related('gateway_config').prefetch_related('registers').all()
     data = []
     for slave in slaves:
+        cfg = slave.gateway_config
         data.append({
             'id': slave.id,
             'slave_id': slave.slave_id,
@@ -1505,8 +1506,8 @@ def global_slaves_list(request):
             'timeout_ms': slave.timeout_ms,
             'priority': slave.priority,
             'enabled': slave.enabled,
-            'config_id': slave.gateway_config.id,
-            'config_name': slave.gateway_config.name or slave.gateway_config.config_id,
+            'config_id': cfg.id if cfg else None,
+            'config_name': (cfg.name or cfg.config_id) if cfg else 'global',
             'registers': [_register_to_dict(reg) for reg in slave.registers.all()],
         })
     return Response(data)
@@ -1519,14 +1520,14 @@ def global_slave_create(request):
     Create a new slave device. Requires config_id (DB integer id) in the request body.
     Requires staff authentication.
     """
+    # config_id is optional now — allow creating global (unattached) slaves
     config_id = request.data.get('config_id')
-    if not config_id:
-        return Response({'error': 'config_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        config = GatewayConfig.objects.get(id=config_id)
-    except GatewayConfig.DoesNotExist:
-        return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
+    config = None
+    if config_id:
+        try:
+            config = GatewayConfig.objects.get(id=config_id)
+        except GatewayConfig.DoesNotExist:
+            return Response({'error': 'Configuration not found'}, status=status.HTTP_404_NOT_FOUND)
 
     slave_id = request.data.get('slave_id')
     device_name = request.data.get('device_name')
@@ -1539,8 +1540,13 @@ def global_slave_create(request):
     if not slave_id or not device_name:
         return Response({'error': 'slave_id and device_name are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if SlaveDevice.objects.filter(gateway_config=config, slave_id=slave_id).exists():
-        return Response({'error': 'Slave ID already exists for this configuration'}, status=status.HTTP_400_BAD_REQUEST)
+    # If config provided, enforce uniqueness per-config. Otherwise ensure global slave_id uniqueness
+    if config:
+        if SlaveDevice.objects.filter(gateway_config=config, slave_id=slave_id).exists():
+            return Response({'error': 'Slave ID already exists for this configuration'}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        if SlaveDevice.objects.filter(gateway_config__isnull=True, slave_id=slave_id).exists():
+            return Response({'error': 'Global Slave ID already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         slave = SlaveDevice.objects.create(
@@ -1586,8 +1592,8 @@ def global_slave_create(request):
             'timeout_ms': slave.timeout_ms,
             'priority': slave.priority,
             'enabled': slave.enabled,
-            'config_id': config.id,
-            'config_name': config.name or config.config_id,
+            'config_id': config.id if config else None,
+            'config_name': (config.name or config.config_id) if config else 'global',
             'registers': registers,
         }, status=status.HTTP_201_CREATED)
 
@@ -1650,8 +1656,8 @@ def global_slave_update(request, slave_pk):
         'timeout_ms': slave.timeout_ms,
         'priority': slave.priority,
         'enabled': slave.enabled,
-        'config_id': config.id,
-        'config_name': config.name or config.config_id,
+        'config_id': config.id if config else None,
+        'config_name': (config.name or config.config_id) if config else 'global',
         'registers': registers,
     })
 

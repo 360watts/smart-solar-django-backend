@@ -56,7 +56,8 @@ class GatewayConfig(models.Model):
 
 
 class SlaveDevice(models.Model):
-	gateway_config = models.ForeignKey(GatewayConfig, related_name="slaves", on_delete=models.CASCADE)
+	# Allow slaves to exist without being attached to a GatewayConfig (global mode)
+	gateway_config = models.ForeignKey(GatewayConfig, related_name="slaves", on_delete=models.CASCADE, null=True, blank=True)
 	slave_id = models.PositiveSmallIntegerField()
 	device_name = models.CharField(max_length=64)
 	polling_interval_ms = models.PositiveIntegerField(default=5000)
@@ -69,7 +70,8 @@ class SlaveDevice(models.Model):
 		ordering = ["slave_id"]
 
 	def __str__(self):
-		return f"{self.gateway_config.config_id}:slave:{self.slave_id}"
+		cfg = self.gateway_config.config_id if self.gateway_config else 'global'
+		return f"{cfg}:slave:{self.slave_id}"
 
 
 class RegisterMapping(models.Model):

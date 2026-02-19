@@ -25,7 +25,7 @@ class UserProfile(models.Model):
 
 class Device(models.Model):
 	device_serial = models.CharField(max_length=64, unique=True)
-	owner = models.ForeignKey(User, related_name="devices", on_delete=models.SET_NULL, null=True, blank=True)
+	user = models.ForeignKey(User, related_name="devices", on_delete=models.SET_NULL, null=True, blank=True)
 	public_key_algorithm = models.CharField(max_length=32, blank=True, null=True)
 	csr_pem = models.TextField(blank=True, null=True)
 	provisioned_at = models.DateTimeField(default=timezone.now)

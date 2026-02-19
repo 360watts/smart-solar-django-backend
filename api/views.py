@@ -417,13 +417,13 @@ def devices_list(request: Any) -> Response:
         return Response({"error": "Invalid page or page_size parameter. Must be integers."}, status=status.HTTP_400_BAD_REQUEST)
     
     # Optimize query: only fetch related data we need (including audit fields)
-    devices = Device.objects.select_related('owner', 'created_by', 'updated_by').all().order_by("-provisioned_at")
+    devices = Device.objects.select_related('user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
 
     # Apply search filter
     if search:
         devices = devices.filter(
             Q(device_serial__icontains=search) |
-            Q(owner__username__icontains=search) |
+            Q(user__username__icontains=search) |
             Q(config_version__icontains=search)
         )
     
@@ -442,7 +442,7 @@ def devices_list(request: Any) -> Response:
             "device_serial": device.device_serial,
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
-            "owner": device.owner.username if device.owner else None,
+            "user": device.user.username if device.user else None,
             "created_by_username": device.created_by.username if device.created_by else None,
             "created_at": device.provisioned_at.isoformat(),
             "updated_by_username": device.updated_by.username if device.updated_by else None,
@@ -1010,7 +1010,7 @@ def get_user_devices(request, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
     
     # Get devices assigned to this user
-    devices = Device.objects.filter(owner=user)
+    devices = Device.objects.filter(user=user)
     
     device_list = []
     for device in devices:

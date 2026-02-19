@@ -29,8 +29,7 @@ class AlertSerializer(serializers.ModelSerializer):
 
 
 class DeviceSerializer(serializers.ModelSerializer):
-    owner = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    owner_username = serializers.SerializerMethodField()
+    user = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     created_by_username = serializers.SerializerMethodField()
     created_at = serializers.SerializerMethodField()
     updated_by_username = serializers.SerializerMethodField()
@@ -38,12 +37,9 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'owner', 'owner_username', 'provisioned_at', 'config_version',
+        fields = ['id', 'device_serial', 'user', 'provisioned_at', 'config_version',
                   'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
-        read_only_fields = ['id', 'provisioned_at', 'owner_username']
-
-    def get_owner_username(self, obj):
-        return obj.owner.username if obj.owner else None
+        read_only_fields = ['id', 'provisioned_at']
 
     def get_created_by_username(self, obj):
         try:
@@ -79,10 +75,10 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
-        ret['owner'] = instance.owner.username if instance.owner else None
+        ret['user'] = instance.user.username if instance.user else None
         return ret
 
-    def validate_owner(self, value):
+    def validate_user(self, value):
         if not value:
             return None
         try:
@@ -91,18 +87,18 @@ class DeviceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"User '{value}' does not exist")
 
     def create(self, validated_data):
-        owner = validated_data.pop('owner', None)
+        user = validated_data.pop('user', None)
         instance = super().create(validated_data)
-        if owner:
-            instance.owner = owner
+        if user:
+            instance.user = user
             instance.save()
         return instance
 
     def update(self, instance, validated_data):
-        owner = validated_data.pop('owner', None)
+        user = validated_data.pop('user', None)
         instance = super().update(instance, validated_data)
-        if 'owner' in self.initial_data:
-            instance.owner = owner
+        if 'user' in self.initial_data:
+            instance.user = user
             instance.save()
         return instance
 

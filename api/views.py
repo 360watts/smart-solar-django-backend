@@ -242,32 +242,40 @@ def gateway_config(request: Any, device_id: str) -> Response:
     ESP32 expects complete config with uartConfig, slaves, registers
     Requires device JWT authentication
     """
-    # Authenticate device
-    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
-    if not is_valid:
-        logger.warning(f"Config request failed authentication from {device_id}: {result}")
-        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
-    
-    logger.info(f"Config request from {device_id}: {request.data}")
-    
-    # Verify device exists
-    device, _ = Device.objects.get_or_create(device_serial=device_id)
-    
-    # Get latest config
-    config = GatewayConfig.objects.order_by("-updated_at").first()
-    if not config:
-        logger.warning("No configuration available")
-        return Response({"message": "No configuration available"}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Update device's config version
-    device.config_version = config.config_id
-    device.save(update_fields=["config_version"])
-    
-    # Serialize and return
-    data = GatewayConfigSerializer(config).data
-    logger.info(f"Sending config {config.config_id} to device {device_id}")
-    
-    return Response(data, status=status.HTTP_200_OK)
+    try:
+        # Authenticate device
+        is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+        if not is_valid:
+            logger.warning(f"Config request failed authentication from {device_id}: {result}")
+            return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+
+        logger.info(f"Config request from {device_id}: {request.data}")
+
+        # Verify device exists
+        device, _ = Device.objects.get_or_create(device_serial=device_id)
+
+        # Get latest config
+        config = GatewayConfig.objects.order_by("-updated_at").first()
+        if not config:
+            logger.warning("No configuration available")
+            return Response({"message": "No configuration available"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Update device's config version
+        device.config_version = config.config_id
+        device.save(update_fields=["config_version"])
+
+        # Serialize and return
+        data = GatewayConfigSerializer(config).data
+        logger.info(f"Sending config {config.config_id} to device {device_id}")
+
+        return Response(data, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"gateway_config error for device {device_id}: {e}", exc_info=True)
+        return Response(
+            {"error": "Internal server error", "detail": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(["POST"])

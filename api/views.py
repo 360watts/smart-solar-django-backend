@@ -22,7 +22,8 @@ from .serializers import (
     TelemetryDataSerializer,
     DeviceSerializer,
 )
-from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping
+from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping, DeviceLog
+from ota.models import DeviceTargetedFirmware
 import logging
 import jwt
 import secrets
@@ -348,6 +349,10 @@ def heartbeat(request: Any, device_id: str) -> Response:
     # Get device
     device, _ = Device.objects.get_or_create(device_serial=device_id)
     
+    # Update last heartbeat timestamp
+    device.last_heartbeat = timezone.now()
+    device.save(update_fields=['last_heartbeat'])
+    
     # Get device's current config from request
     current_config_id = request.data.get("configId", "")
     device_config_timestamp = request.data.get("configTimestamp", "")
@@ -385,18 +390,44 @@ def heartbeat(request: Any, device_id: str) -> Response:
             update_config_needed = 1
             logger.info(f"Config update needed: device has {current_config_id} but no config assigned on backend")
     
+    # Check for pending reboot command
+    reboot_needed = 1 if device.pending_reboot else 0
+    if reboot_needed:
+        logger.info(f"Reboot command queued for device {device_id}")
+        # Clear the flag after sending command once
+        device.pending_reboot = False
+        device.save(update_fields=['pending_reboot'])
+    
+    # Check for pending hard reset command
+    hard_reset_needed = 1 if device.pending_hard_reset else 0
+    if hard_reset_needed:
+        logger.info(f"Hard reset command queued for device {device_id}")
+        # Clear the flag after sending command once
+        device.pending_hard_reset = False
+        device.save(update_fields=['pending_hard_reset'])
+    
+    # Check for pending firmware update (OTA)
+    update_firmware_needed = 0
+    try:
+        if hasattr(device, 'targeted_firmware') and device.targeted_firmware.is_active:
+            update_firmware_needed = 1
+            logger.info(f"Firmware update available for device {device_id}: {device.targeted_firmware.target_firmware.version}")
+    except DeviceTargetedFirmware.DoesNotExist:
+        pass
+    
+    # Check if device should send logs
+    send_logs = 1 if device.logs_enabled else 0
+    
     # Build response with commands
     response_data = {
         "status": 1,  # ESP32 checks for status == 1
         "serverTime": timezone.now().isoformat(),
         "commands": {
             "updateConfig": update_config_needed,
-            "reboot": 0,
-            "updateFirmware": 0,
-            "updateNetwork": 0,
-            "sendLogs": 0,
-            "clearLogs": 0,
-            "hardReset": 0,
+            "reboot": reboot_needed,
+            "hardReset": hard_reset_needed,
+            "updateFirmware": update_firmware_needed,
+            "sendLogs": send_logs,
         },
         "message": "OK"
     }
@@ -408,8 +439,8 @@ def heartbeat(request: Any, device_id: str) -> Response:
 @permission_classes([AllowAny])
 def logs(request: Any, device_id: str) -> Response:
     """
-    Logs endpoint: /api/devices/{device_id}/logs
-    ESP32 sends log data when requested
+    Logs endpoint: /api/devices/{device_id}/logs or /api/devices/{device_id}/deviceLogs
+    ESP32 sends log data when sendLogs is enabled in heartbeat
     Requires device JWT authentication
     """
     # Authenticate device
@@ -418,9 +449,27 @@ def logs(request: Any, device_id: str) -> Response:
         logger.warning(f"Logs upload failed authentication from {device_id}: {result}")
         return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
     
-    logger.info(f"Logs from {device_id}: {len(request.data)} items")
-    # Store logs (implement as needed)
-    return Response({"status": "stored"}, status=status.HTTP_200_OK)
+    try:
+        device = Device.objects.get(device_serial=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Extract log data from request
+    logs_data = request.data.get('logs', [])
+    if not isinstance(logs_data, list):
+        logs_data = [request.data]  # Single log entry
+    
+    # Save logs to database
+    for log_entry in logs_data:
+        DeviceLog.objects.create(
+            device=device,
+            log_level=log_entry.get('level', 'INFO'),
+            message=log_entry.get('message', ''),
+            metadata=log_entry.get('metadata', {})
+        )
+    
+    logger.info(f"Logs from {device_id}: {len(logs_data)} items stored")
+    return Response({"status": "stored", "count": len(logs_data)}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -519,6 +568,9 @@ def devices_list(request: Any) -> Response:
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
             "user": device.user.username if device.user else None,
+            "is_online": device.is_online(),
+            "last_heartbeat": device.last_heartbeat.isoformat() if device.last_heartbeat else None,
+            "logs_enabled": device.logs_enabled,
             "created_by_username": device.created_by.username if device.created_by else None,
             "created_at": device.provisioned_at.isoformat(),
             "updated_by_username": device.updated_by.username if device.updated_by else None,
@@ -1097,6 +1149,9 @@ def get_user_devices(request, user_id):
             'model': device.model,
             'provisioned_at': device.provisioned_at.isoformat() if device.provisioned_at else None,
             'config_version': device.config_version,
+            'is_online': device.is_online(),
+            'last_heartbeat': device.last_heartbeat.isoformat() if device.last_heartbeat else None,
+            'logs_enabled': device.logs_enabled,
         })
     
     return Response(device_list)
@@ -1397,6 +1452,60 @@ def update_device(request, device_id):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def reboot_device(request, device_id):
+    """
+    Trigger a device reboot by setting pending_reboot flag.
+    The next heartbeat will return reboot command and clear the flag.
+    Requires staff authentication.
+    """
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Set reboot flag
+    device.pending_reboot = True
+    device.save(update_fields=['pending_reboot'])
+    
+    logger.info(f"Reboot command queued for device {device.device_serial} by user {request.user}")
+    
+    return Response({
+        'message': f'Reboot command queued for device {device.device_serial}',
+        'device_id': device.id,
+        'device_serial': device.device_serial,
+        'pending_reboot': True
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def hard_reset_device(request, device_id):
+    """
+    Trigger a device hard reset by setting pending_hard_reset flag.
+    The next heartbeat will return hardReset command and clear the flag.
+    Requires staff authentication.
+    """
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Set hard reset flag
+    device.pending_hard_reset = True
+    device.save(update_fields=['pending_hard_reset'])
+    
+    logger.info(f"Hard reset command queued for device {device.device_serial} by user {request.user}")
+    
+    return Response({
+        'message': f'Hard reset command queued for device {device.device_serial}',
+        'device_id': device.id,
+        'device_serial': device.device_serial,
+        'pending_hard_reset': True
+    })
+
+
 @api_view(['DELETE'])
 @permission_classes([IsStaffUser])
 def delete_device(request, device_id):
@@ -1416,6 +1525,71 @@ def delete_device(request, device_id):
     except Exception as e:
         logger.error(f"Error deleting device {device_id}: {str(e)}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def device_logs_retrieve(request, device_id):
+    """
+    Retrieve device logs for UI display.
+    Requires staff authentication.
+    """
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Get logs with pagination
+    limit = int(request.GET.get('limit', 100))
+    offset = int(request.GET.get('offset', 0))
+    
+    logs = DeviceLog.objects.filter(device=device)[offset:offset+limit]
+    total_count = DeviceLog.objects.filter(device=device).count()
+    
+    logs_data = [{
+        'id': log.id,
+        'timestamp': log.timestamp.isoformat(),
+        'level': log.log_level,
+        'message': log.message,
+        'metadata': log.metadata
+    } for log in logs]
+    
+    return Response({
+        'logs': logs_data,
+        'total': total_count,
+        'limit': limit,
+        'offset': offset
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def toggle_device_logs(request, device_id):
+    """
+    Toggle logs_enabled flag for a device.
+    Requires staff authentication.
+    """
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Toggle or set logs_enabled
+    if 'enabled' in request.data:
+        device.logs_enabled = request.data['enabled']
+    else:
+        device.logs_enabled = not device.logs_enabled
+    
+    device.save(update_fields=['logs_enabled'])
+    
+    logger.info(f"Device {device.device_serial} logs {'enabled' if device.logs_enabled else 'disabled'} by user {request.user}")
+    
+    return Response({
+        'message': f'Device logs {"enabled" if device.logs_enabled else "disabled"}',
+        'device_id': device.id,
+        'device_serial': device.device_serial,
+        'logs_enabled': device.logs_enabled
+    })
 
 
 @api_view(['POST', 'OPTIONS'])

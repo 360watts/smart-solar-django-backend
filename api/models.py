@@ -32,12 +32,23 @@ class Device(models.Model):
 	csr_pem = models.TextField(blank=True, null=True)
 	provisioned_at = models.DateTimeField(default=timezone.now)
 	config_version = models.CharField(max_length=32, blank=True, null=True)
+	last_heartbeat = models.DateTimeField(null=True, blank=True, help_text="Last time device sent a heartbeat")
+	pending_reboot = models.BooleanField(default=False, help_text="Flag to trigger device reboot on next heartbeat")
+	pending_hard_reset = models.BooleanField(default=False, help_text="Flag to trigger device hard reset on next heartbeat")
+	logs_enabled = models.BooleanField(default=False, help_text="Enable device to send logs")
 	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_created')
 	updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_updated')
 	updated_at = models.DateTimeField(auto_now=True)
 
 	def __str__(self):
 		return self.device_serial
+	
+	def is_online(self):
+		"""Check if device is online based on last heartbeat (within 5 minutes)"""
+		if not self.last_heartbeat:
+			return False
+		from django.utils import timezone
+		return (timezone.now() - self.last_heartbeat).total_seconds() < 300
 
 
 class GatewayConfig(models.Model):
@@ -185,6 +196,25 @@ class Alert(models.Model):
 		self.resolved_at = timezone.now()
 		self.resolved_by = user
 		self.save(update_fields=["status", "resolved_at", "resolved_by"])
+
+
+class DeviceLog(models.Model):
+	"""Store logs received from devices"""
+	device = models.ForeignKey(Device, related_name="logs", on_delete=models.CASCADE)
+	timestamp = models.DateTimeField(default=timezone.now)
+	log_level = models.CharField(max_length=16, default="INFO")  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+	message = models.TextField()
+	metadata = models.JSONField(default=dict, blank=True)  # Store additional context
+	
+	class Meta:
+		ordering = ["-timestamp"]
+		indexes = [
+			models.Index(fields=["device", "timestamp"]),
+			models.Index(fields=["log_level"]),
+		]
+	
+	def __str__(self):
+		return f"{self.device.device_serial} [{self.log_level}] {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
 
 
 class SolarSite(models.Model):

@@ -1324,6 +1324,8 @@ def presets_list(request):
             'config_id': config.config_id,
             'name': config.name or config.config_id,
             'description': f'Config with {config.slaves_count} slaves',
+            'version': config.version,
+            'updated_at': config.updated_at.isoformat(),
             'gateway_configuration': {
                 'general_settings': {
                     'config_id': config.config_id,

@@ -175,6 +175,22 @@ def provision(request: Any) -> Response:
         return Response({"status": "error", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     
     data = serializer.validated_data
+    
+    # Check for duplicate MAC address (hw_id must be unique)
+    hw_id = data.get('hwId', '').strip()
+    if hw_id:
+        existing_device = Device.objects.filter(hw_id=hw_id).first()
+        if existing_device:
+            logger.warning(f"Provision attempt with duplicate MAC: {hw_id} (already used by device {existing_device.device_serial})")
+            return Response(
+                {
+                    "status": "error", 
+                    "error": "Duplicate MAC address",
+                    "message": f"A device with MAC address {hw_id} already exists (Device ID: {existing_device.device_serial})"
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+    
     # Generate random deviceId
     device_id = secrets.token_hex(6).upper()
     
@@ -1038,6 +1054,8 @@ def get_user_devices(request, user_id):
         device_list.append({
             'id': device.id,
             'device_serial': device.device_serial,
+            'hw_id': device.hw_id,
+            'model': device.model,
             'provisioned_at': device.provisioned_at.isoformat() if device.provisioned_at else None,
             'config_version': device.config_version,
         })

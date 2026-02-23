@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Alert
+from .models import Device, GatewayConfig, SlaveDevice, RegisterMapping, TelemetryData, UserProfile, Alert, SolarSite
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -218,3 +218,17 @@ class TelemetryDataSerializer(serializers.ModelSerializer):
 			"register_label",
 			"quality",
 		]
+
+
+class SolarSiteSerializer(serializers.ModelSerializer):
+    device_serial = serializers.CharField(source='device.device_serial', read_only=True)
+
+    class Meta:
+        model = SolarSite
+        fields = [
+            'id', 'device_id', 'device_serial', 'site_id', 'display_name',
+            'latitude', 'longitude', 'capacity_kw',
+            'tilt_deg', 'azimuth_deg', 'timezone', 'is_active',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'device_id', 'device_serial', 'created_at', 'updated_at']

@@ -183,3 +183,28 @@ class Alert(models.Model):
 		self.resolved_at = timezone.now()
 		self.resolved_by = user
 		self.save(update_fields=["status", "resolved_at", "resolved_by"])
+
+
+class SolarSite(models.Model):
+    """Solar installation details for a device/customer site.
+    Table already created in Supabase via raw SQL — managed=False."""
+    device       = models.OneToOneField(Device, on_delete=models.CASCADE,
+                                        related_name='solar_site', db_column='device_id')
+    site_id      = models.CharField(max_length=64, unique=True)
+    display_name = models.CharField(max_length=100, blank=True)
+    latitude     = models.FloatField()
+    longitude    = models.FloatField()
+    capacity_kw  = models.FloatField()
+    tilt_deg     = models.FloatField(default=18.0)
+    azimuth_deg  = models.FloatField(default=180.0)
+    timezone     = models.CharField(max_length=50, default='Asia/Kolkata')
+    is_active    = models.BooleanField(default=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+    updated_at   = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False          # table already exists in Supabase — no migration needed
+        db_table = 'api_solarsite'
+
+    def __str__(self):
+        return f"{self.site_id} ({self.device.device_serial})"

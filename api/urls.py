@@ -26,6 +26,8 @@ urlpatterns = [
 	path("users/<int:user_id>/", views.update_user, name="update_user"),
 	path("users/<int:user_id>/delete/", views.delete_user, name="delete_user"),
 	path("users/<int:user_id>/devices/", views.get_user_devices, name="get_user_devices"),
+	path("users/<int:user_id>/site/", views.user_site, name="user_site"),
+	path("users/<int:user_id>/site/update/", views.user_site_update, name="user_site_update"),
 	
 	# Profile management endpoints (for current logged-in user)
 	path("profile/", views.get_profile, name="get_profile"),

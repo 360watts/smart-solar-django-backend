@@ -2157,10 +2157,23 @@ def device_site(request: Any, device_id: int) -> Response:
     device = get_object_or_404(Device, pk=device_id)
 
     if request.method == 'GET':
-        site = SolarSite.objects.filter(device_id=device.id).first()
-        if not site:
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response(SolarSiteSerializer(site).data)
+        try:
+            # Use select_related to efficiently load the device relationship
+            site = SolarSite.objects.select_related('device').filter(device_id=device.id).first()
+            if not site:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            serializer = SolarSiteSerializer(site)
+            return Response(serializer.data)
+        except Exception as e:
+            # Log error and return a proper error response
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error fetching site for device {device_id}: {str(e)}")
+            print(error_details)
+            return Response(
+                {'error': 'Failed to retrieve site', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     # POST — create
     if SolarSite.objects.filter(device_id=device.id).exists():
@@ -2180,7 +2193,7 @@ def device_site_update(request: Any, device_id: int) -> Response:
     """Update the solar site for a device."""
     device = get_object_or_404(Device, pk=device_id)
     try:
-        site = SolarSite.objects.get(device_id=device.id)
+        site = SolarSite.objects.select_related('device').get(device_id=device.id)
     except SolarSite.DoesNotExist:
         return Response({'error': 'No site found — use POST to create one'}, status=status.HTTP_404_NOT_FOUND)
 

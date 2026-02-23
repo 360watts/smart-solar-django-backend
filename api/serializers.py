@@ -221,7 +221,14 @@ class TelemetryDataSerializer(serializers.ModelSerializer):
 
 
 class SolarSiteSerializer(serializers.ModelSerializer):
-    device_serial = serializers.CharField(source='device.device_serial', read_only=True)
+    device_serial = serializers.SerializerMethodField(read_only=True)
+    
+    def get_device_serial(self, obj):
+        """Safely get device serial, handling potential FK issues."""
+        try:
+            return obj.device.device_serial if obj.device else None
+        except Exception:
+            return None
 
     class Meta:
         model = SolarSite

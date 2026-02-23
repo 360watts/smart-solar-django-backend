@@ -2140,3 +2140,110 @@ def user_site_update(request: Any, user_id: int) -> Response:
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
+
+
+# ─── DynamoDB Site Data endpoints ────────────────────────────────────────────
+import boto3
+from boto3.dynamodb.conditions import Key as DynamoKey
+from decimal import Decimal
+
+
+def _get_dynamo_table():
+    """Build a boto3 DynamoDB Table resource from env config."""
+    dynamodb = boto3.resource(
+        'dynamodb',
+        region_name=env_config('DYNAMODB_REGION', default='ap-south-1'),
+        aws_access_key_id=env_config('AWS_ACCESS_KEY_ID', default=''),
+        aws_secret_access_key=env_config('AWS_SECRET_ACCESS_KEY', default=''),
+    )
+    return dynamodb.Table(env_config('DYNAMODB_TABLE', default='meter_readings_actual'))
+
+
+def _convert_decimals(obj):
+    """Recursively convert boto3 Decimal values to float for JSON serialisation."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, list):
+        return [_convert_decimals(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _convert_decimals(v) for k, v in obj.items()}
+    return obj
+
+
+def _check_site_auth(request, site_id: str) -> bool:
+    """Return True if the requesting user is authorised to read this site."""
+    if request.user.is_staff:
+        return True
+    return SolarSite.objects.filter(
+        device__user=request.user, site_id=site_id, is_active=True
+    ).exists()
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_telemetry(request: Any, site_id: str) -> Response:
+    """
+    Return the last 24 h of TELEMETRY records for a site from DynamoDB.
+    Staff sees any site; regular users only see their own.
+    """
+    if not _check_site_auth(request, site_id):
+        return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        table = _get_dynamo_table()
+        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        since = now_utc - timedelta(hours=24)
+        resp = table.query(
+            KeyConditionExpression=DynamoKey('site_id').eq(site_id) & DynamoKey('timestamp').between(
+                since.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            )
+        )
+        return Response(_convert_decimals(resp.get('Items', [])))
+    except Exception as exc:
+        logger.error('DynamoDB telemetry error site=%s: %s', site_id, exc)
+        return Response([], status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_forecast(request: Any, site_id: str) -> Response:
+    """
+    Return today's FORECAST records (FORECAST#<date>…) for a site from DynamoDB.
+    """
+    if not _check_site_auth(request, site_id):
+        return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        table = _get_dynamo_table()
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        resp = table.query(
+            KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                & DynamoKey('timestamp').begins_with(f'FORECAST#{today}'),
+            ScanIndexForward=True,
+        )
+        return Response(_convert_decimals(resp.get('Items', [])))
+    except Exception as exc:
+        logger.error('DynamoDB forecast error site=%s: %s', site_id, exc)
+        return Response([], status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_weather(request: Any, site_id: str) -> Response:
+    """
+    Return the latest WEATHER_OBS record for a site from DynamoDB.
+    """
+    if not _check_site_auth(request, site_id):
+        return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        table = _get_dynamo_table()
+        resp = table.query(
+            KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                & DynamoKey('timestamp').begins_with('WEATHER_OBS#'),
+            ScanIndexForward=False,
+            Limit=1,
+        )
+        items = _convert_decimals(resp.get('Items', []))
+        return Response(items[0] if items else None)
+    except Exception as exc:
+        logger.error('DynamoDB weather error site=%s: %s', site_id, exc)
+        return Response(None, status=status.HTTP_200_OK)

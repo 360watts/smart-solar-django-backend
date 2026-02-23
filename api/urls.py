@@ -28,6 +28,11 @@ urlpatterns = [
 	path("users/<int:user_id>/devices/", views.get_user_devices, name="get_user_devices"),
 	path("users/<int:user_id>/site/", views.user_site, name="user_site"),
 	path("users/<int:user_id>/site/update/", views.user_site_update, name="user_site_update"),
+
+	# DynamoDB site data endpoints
+	path("sites/<str:site_id>/telemetry/", views.site_telemetry, name="site_telemetry"),
+	path("sites/<str:site_id>/forecast/", views.site_forecast, name="site_forecast"),
+	path("sites/<str:site_id>/weather/", views.site_weather, name="site_weather"),
 	
 	# Profile management endpoints (for current logged-in user)
 	path("profile/", views.get_profile, name="get_profile"),

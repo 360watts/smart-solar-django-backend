@@ -1849,6 +1849,10 @@ def global_slave_create(request):
             )
             registers.append(_register_to_dict(register))
 
+        # Update parent GatewayConfig timestamp to trigger device config updates
+        if config:
+            config.save(update_fields=['updated_at'])
+
         return Response({
             'id': slave.id,
             'slave_id': slave.slave_id,
@@ -1912,7 +1916,11 @@ def global_slave_update(request, slave_pk):
         )
         registers.append(_register_to_dict(register))
 
+    # Update parent GatewayConfig timestamp to trigger device config updates
     config = slave.gateway_config
+    if config:
+        config.save(update_fields=['updated_at'])
+
     return Response({
         'id': slave.id,
         'slave_id': slave.slave_id,
@@ -2034,6 +2042,9 @@ def create_slave(request, config_id):
                 enabled=reg_data.get('enabled', True)
             )
             registers.append(_register_to_dict(register))
+
+        # Update parent GatewayConfig timestamp to trigger device config updates
+        config.save(update_fields=['updated_at'])
 
         return Response({
             'id': slave.id,

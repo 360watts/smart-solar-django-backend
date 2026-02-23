@@ -383,7 +383,9 @@ def heartbeat(request: Any, device_id: str) -> Response:
         logger.warning(f"Heartbeat failed authentication from {device_id}: {result}")
         return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
     
-    logger.info(f"Heartbeat from {device_id}: {request.data}")
+    # Log only sanitized, non-sensitive data (exclude JWT secret)
+    sanitized_data = {k: v for k, v in request.data.items() if k != 'secret'}
+    logger.info(f"Heartbeat from {device_id}: {sanitized_data}")
     
     # Get device
     device, _ = Device.objects.get_or_create(device_serial=device_id)

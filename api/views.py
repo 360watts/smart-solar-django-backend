@@ -258,17 +258,32 @@ def gateway_config(request: Any, device_id: str) -> Response:
         # Verify device exists
         device, _ = Device.objects.get_or_create(device_serial=device_id)
 
-        # Get latest config
-        config = GatewayConfig.objects.order_by("-updated_at").first()
+        # Check if device has a user assigned
+        if not device.user:
+            logger.warning(f"Device {device_id} has no user assigned")
+            return Response(
+                {"error": "Device not configured", "message": "Device must have a user assigned before configuration can be retrieved"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Check if device has a gateway config assigned
+        if not device.config_version:
+            logger.warning(f"Device {device_id} has no gateway configuration assigned")
+            return Response(
+                {"error": "Device not configured", "message": "Device must have a gateway configuration (preset) assigned before configuration can be retrieved"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get the specific config for this device
+        config = GatewayConfig.objects.filter(config_id=device.config_version).first()
         if not config:
-            logger.warning("No configuration available")
-            return Response({"message": "No configuration available"}, status=status.HTTP_404_NOT_FOUND)
+            logger.warning(f"Configuration {device.config_version} not found for device {device_id}")
+            return Response(
+                {"error": "Configuration not found", "message": f"Assigned configuration {device.config_version} does not exist"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # Update device's config version
-        device.config_version = config.config_id
-        device.save(update_fields=["config_version"])
-
-        # Serialize and return
+        # Serialize and return (config_version already set via admin/app)
         data = GatewayConfigSerializer(config).data
         logger.info(f"Sending config {config.config_id} to device {device_id}")
 

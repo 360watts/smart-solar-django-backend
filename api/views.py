@@ -2602,7 +2602,11 @@ def _check_site_auth(request, site_id: str) -> bool:
 @permission_classes([IsAuthenticated])
 def site_telemetry(request: Any, site_id: str) -> Response:
     """
-    Return the last 24 h of TELEMETRY records for a site from DynamoDB.
+    Return TELEMETRY records for a site from DynamoDB.
+    Query params:
+      - start_date: ISO date string (default: 24h ago)
+      - end_date: ISO date string (default: now)
+      - days: number of days to look back (alternative to start_date)
     Staff sees any site; regular users only see their own.
     """
     if not _check_site_auth(request, site_id):
@@ -2610,11 +2614,37 @@ def site_telemetry(request: Any, site_id: str) -> Response:
     try:
         table = _get_dynamo_table()
         now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-        since = now_utc - timedelta(hours=24)
+        
+        # Parse date range from query params
+        days = request.GET.get('days')
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+        
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except:
+                end_dt = now_utc
+        else:
+            end_dt = now_utc
+            
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except:
+                start_dt = end_dt - timedelta(hours=24)
+        elif days:
+            try:
+                start_dt = end_dt - timedelta(days=int(days))
+            except:
+                start_dt = end_dt - timedelta(hours=24)
+        else:
+            start_dt = end_dt - timedelta(hours=24)
+        
         resp = table.query(
             KeyConditionExpression=DynamoKey('site_id').eq(site_id) & DynamoKey('timestamp').between(
-                since.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                end_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
             )
         )
         return Response(_convert_decimals(resp.get('Items', [])))
@@ -2627,18 +2657,57 @@ def site_telemetry(request: Any, site_id: str) -> Response:
 @permission_classes([IsAuthenticated])
 def site_forecast(request: Any, site_id: str) -> Response:
     """
-    Return today's FORECAST records (FORECAST#<date>…) for a site from DynamoDB.
+    Return FORECAST records (FORECAST#<date>…) for a site from DynamoDB.
+    Query params:
+      - date: ISO date string (default: today)
+      - start_date: ISO date string for range query
+      - end_date: ISO date string for range query
     """
     if not _check_site_auth(request, site_id):
         return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
     try:
         table = _get_dynamo_table()
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        resp = table.query(
-            KeyConditionExpression=DynamoKey('site_id').eq(site_id)
-                & DynamoKey('timestamp').begins_with(f'FORECAST#{today}'),
-            ScanIndexForward=True,
-        )
+        
+        # Parse date from query params
+        date_param = request.GET.get('date')
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+        
+        if start_date and end_date:
+            # Range query
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                start_str = f"FORECAST#{start_dt.strftime('%Y-%m-%d')}"
+                end_str = f"FORECAST#{end_dt.strftime('%Y-%m-%d')}~"  # ~ is after all times
+                resp = table.query(
+                    KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                        & DynamoKey('timestamp').between(start_str, end_str),
+                    ScanIndexForward=True,
+                )
+            except:
+                # Fallback to today
+                today = datetime.utcnow().strftime('%Y-%m-%d')
+                resp = table.query(
+                    KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                        & DynamoKey('timestamp').begins_with(f'FORECAST#{today}'),
+                    ScanIndexForward=True,
+                )
+        else:
+            # Single day query
+            if date_param:
+                try:
+                    target_date = datetime.fromisoformat(date_param.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                except:
+                    target_date = datetime.utcnow().strftime('%Y-%m-%d')
+            else:
+                target_date = datetime.utcnow().strftime('%Y-%m-%d')
+                
+            resp = table.query(
+                KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                    & DynamoKey('timestamp').begins_with(f'FORECAST#{target_date}'),
+                ScanIndexForward=True,
+            )
         return Response(_convert_decimals(resp.get('Items', [])))
     except Exception as exc:
         logger.error('DynamoDB forecast error site=%s: %s', site_id, exc)

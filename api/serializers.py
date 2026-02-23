@@ -109,7 +109,7 @@ class RegisterMappingSerializer(serializers.ModelSerializer):
 	functionCode = serializers.IntegerField(source="function_code")
 	dataType = serializers.IntegerField(source="data_type")
 	scaleFactor = serializers.FloatField(source="scale_factor")
-	offset = serializers.FloatField(source="offset")
+	offset = serializers.FloatField()
 
 	class Meta:
 		model = RegisterMapping

@@ -29,6 +29,10 @@ urlpatterns = [
 	path("users/<int:user_id>/site/", views.user_site, name="user_site"),
 	path("users/<int:user_id>/site/update/", views.user_site_update, name="user_site_update"),
 
+	# Device-centric site endpoints
+	path("devices/<int:device_id>/site/", views.device_site, name="device_site"),
+	path("devices/<int:device_id>/site/update/", views.device_site_update, name="device_site_update"),
+
 	# DynamoDB site data endpoints
 	path("sites/<str:site_id>/telemetry/", views.site_telemetry, name="site_telemetry"),
 	path("sites/<str:site_id>/forecast/", views.site_forecast, name="site_forecast"),

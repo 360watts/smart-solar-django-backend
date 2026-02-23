@@ -2145,6 +2145,51 @@ def user_site_update(request: Any, user_id: int) -> Response:
     return Response(serializer.data)
 
 
+# ─── Device-centric Site endpoints ───────────────────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsStaffUser])
+def device_site(request: Any, device_id: int) -> Response:
+    """
+    GET  — return the solar site for a device, or 204 if none exists.
+    POST — create a solar site linked directly to the device.
+    """
+    device = get_object_or_404(Device, pk=device_id)
+
+    if request.method == 'GET':
+        site = SolarSite.objects.filter(device_id=device.id).first()
+        if not site:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(SolarSiteSerializer(site).data)
+
+    # POST — create
+    if SolarSite.objects.filter(device_id=device.id).exists():
+        return Response(
+            {'error': 'Site already exists — use PUT to update'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    serializer = SolarSiteSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save(device=device)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PUT'])
+@permission_classes([IsStaffUser])
+def device_site_update(request: Any, device_id: int) -> Response:
+    """Update the solar site for a device."""
+    device = get_object_or_404(Device, pk=device_id)
+    try:
+        site = SolarSite.objects.get(device_id=device.id)
+    except SolarSite.DoesNotExist:
+        return Response({'error': 'No site found — use POST to create one'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = SolarSiteSerializer(site, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
 # ─── DynamoDB Site Data endpoints ────────────────────────────────────────────
 import boto3
 from boto3.dynamodb.conditions import Key as DynamoKey

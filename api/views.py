@@ -350,16 +350,40 @@ def heartbeat(request: Any, device_id: str) -> Response:
     
     # Get device's current config from request
     current_config_id = request.data.get("configId", "")
-    
-    # Get latest config from database
-    latest_config = GatewayConfig.objects.order_by("-updated_at").first()
+    device_config_timestamp = request.data.get("configTimestamp", "")
     
     # Determine if config update is needed
     update_config_needed = 0
-    if latest_config:
-        if current_config_id != latest_config.config_id:
+    
+    # Check if device has an assigned config
+    if device.config_version:
+        # Compare with device's assigned config (not latest in DB)
+        if current_config_id != device.config_version:
             update_config_needed = 1
-            logger.info(f"Config update needed: current={current_config_id}, latest={latest_config.config_id}")
+            logger.info(f"Config update needed: device has {current_config_id}, assigned is {device.config_version}")
+        else:
+            # Config ID matches, but check if it has been modified
+            try:
+                assigned_config = GatewayConfig.objects.get(config_id=device.config_version)
+                # If device sent a timestamp, compare it
+                if device_config_timestamp:
+                    try:
+                        device_timestamp = timezone.datetime.fromisoformat(device_config_timestamp.replace('Z', '+00:00'))
+                        if assigned_config.updated_at > device_timestamp:
+                            update_config_needed = 1
+                            logger.info(f"Config update needed: config {device.config_version} modified since device last fetch")
+                    except (ValueError, AttributeError):
+                        # If timestamp parsing fails, force update to be safe
+                        update_config_needed = 1
+                        logger.warning(f"Invalid configTimestamp from device, forcing update")
+            except GatewayConfig.DoesNotExist:
+                logger.warning(f"Assigned config {device.config_version} not found for device {device_id}")
+    else:
+        # No config assigned yet
+        if current_config_id:
+            # Device has a config but none is assigned on backend
+            update_config_needed = 1
+            logger.info(f"Config update needed: device has {current_config_id} but no config assigned on backend")
     
     # Build response with commands
     response_data = {
@@ -1358,10 +1382,15 @@ def update_device(request, device_id):
 
     serializer = DeviceSerializer(device, data=request.data, partial=True)
     if serializer.is_valid():
+        old_config_version = device.config_version
         device = serializer.save()
         # Set audit fields
         set_audit_fields(device, request)
         device.save()
+        
+        # Log if config_version changed (preset reassignment)
+        if old_config_version != device.config_version:
+            logger.info(f"Device {device.device_serial} config changed from {old_config_version} to {device.config_version}")
         # Re-serialize to include audit fields
         response_serializer = DeviceSerializer(device)
         return Response(response_serializer.data)
@@ -1869,6 +1898,9 @@ def update_slave(request, config_id, slave_id):
     slave.enabled = request.data.get('enabled', slave.enabled)
     registers_data = request.data.get('registers', [])
     slave.save()
+    
+    # Update parent GatewayConfig timestamp to trigger device config updates
+    config.save(update_fields=['updated_at'])
 
     # Update registers - delete existing and create new ones
     RegisterMapping.objects.filter(slave=slave).delete()
@@ -1925,6 +1957,10 @@ def delete_slave(request, config_id, slave_id):
         return Response({'error': 'Slave not found'}, status=status.HTTP_404_NOT_FOUND)
 
     slave.delete()
+    
+    # Update parent GatewayConfig timestamp to trigger device config updates
+    config.save(update_fields=['updated_at'])
+    
     return Response({'message': 'Slave deleted successfully'})
 
 
@@ -1948,6 +1984,9 @@ def detach_slave_from_preset(request, config_id, slave_id):
     # Detach by setting gateway_config to None
     slave.gateway_config = None
     slave.save(update_fields=['gateway_config'])
+    
+    # Update parent GatewayConfig timestamp to trigger device config updates
+    config.save(update_fields=['updated_at'])
 
     return Response({'message': 'Slave detached from preset', 'id': slave.id, 'slave_id': slave.slave_id})
 
@@ -1986,6 +2025,10 @@ def add_slaves_to_preset(request, config_id):
             'config_id': config.config_id,
             'config_name': config.name if hasattr(config, 'name') else None,
         })
+    
+    # Update parent GatewayConfig timestamp to trigger device config updates
+    if updated:
+        config.save(update_fields=['updated_at'])
 
     return Response({'updated': updated}, status=status.HTTP_200_OK)
 

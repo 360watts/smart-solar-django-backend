@@ -30,6 +30,7 @@ class AlertSerializer(serializers.ModelSerializer):
 
 class DeviceSerializer(serializers.ModelSerializer):
     user = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_online = serializers.SerializerMethodField()
     created_by_username = serializers.SerializerMethodField()
     created_at = serializers.SerializerMethodField()
     updated_by_username = serializers.SerializerMethodField()
@@ -38,8 +39,10 @@ class DeviceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Device
         fields = ['id', 'device_serial', 'hw_id', 'model', 'user', 'provisioned_at', 'config_version',
+                  'config_ack_ver', 'config_downloaded_at', 'config_acked_at', 'pending_config_update',
+                  'is_online', 'last_heartbeat', 'logs_enabled',
                   'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
-        read_only_fields = ['id', 'provisioned_at', 'hw_id', 'model']
+        read_only_fields = ['id', 'provisioned_at', 'hw_id', 'model', 'config_downloaded_at', 'config_acked_at']
 
     def get_created_by_username(self, obj):
         try:
@@ -48,6 +51,9 @@ class DeviceSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         return None
+
+    def get_is_online(self, obj):
+        return obj.is_online()
 
     def get_created_at(self, obj):
         try:
@@ -152,6 +158,7 @@ class GatewayConfigSerializer(serializers.ModelSerializer):
 		model = GatewayConfig
 		fields = [
 			"configId",
+			"cfgVer",
 			"updatedAt",
 			"configSchemaVer",
 			"uartConfig",
@@ -159,6 +166,7 @@ class GatewayConfigSerializer(serializers.ModelSerializer):
 		]
 
 	configId = serializers.CharField(source="config_id")
+	cfgVer = serializers.IntegerField(source="version")
 	updatedAt = serializers.DateTimeField(source="updated_at")
 	configSchemaVer = serializers.IntegerField(source="config_schema_ver")
 

@@ -7,6 +7,7 @@ urlpatterns = [
 	path("devices/provision", views.provision, name="provision"),
 	path("devices/<str:device_id>/config", views.gateway_config, name="gateway_config"),
 	path("devices/<str:device_id>/heartbeat", views.heartbeat, name="heartbeat"),
+	path("devices/<str:device_id>/configAck", views.config_ack, name="config_ack"),
 	path("devices/<str:device_id>/logs", views.logs, name="logs"),
 	path("devices/<str:device_id>/deviceLogs", views.logs, name="device_logs"),
 	path("telemetry/ingest", views.telemetry_ingest, name="telemetry_ingest"),

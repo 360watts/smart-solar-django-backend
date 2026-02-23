@@ -219,6 +219,21 @@ def provision(request: Any) -> Response:
         system_user.is_staff = True
         system_user.save()
     
+    # Check for MAC address conflicts (hw_id uniqueness)
+    hw_id = data.get('hwId', '').strip()
+    if hw_id:
+        existing_device_with_mac = Device.objects.filter(hw_id=hw_id).exclude(device_serial=device_id).first()
+        if existing_device_with_mac:
+            logger.error(f"MAC address conflict: {hw_id} already registered to device {existing_device_with_mac.device_serial}")
+            return Response(
+                {
+                    "status": "error",
+                    "error": "MAC address already registered",
+                    "message": f"The MAC address {hw_id} is already registered to another device"
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+    
     # Create or get device
     device, created = Device.objects.get_or_create(
         device_serial=device_id,
@@ -231,7 +246,7 @@ def provision(request: Any) -> Response:
         device.created_by = system_user
         device.updated_by = system_user
     # Always update hw_id and model so re-provisioning keeps them current
-    device.hw_id = data.get('hwId', '')
+    device.hw_id = hw_id
     device.model = data.get('model', '')
     device.save()
     

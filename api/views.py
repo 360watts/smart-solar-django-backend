@@ -444,6 +444,8 @@ def devices_list(request: Any) -> Response:
         data.append({
             "id": device.id,
             "device_serial": device.device_serial,
+            "hw_id": device.hw_id,
+            "model": device.model,
             "provisioned_at": device.provisioned_at.isoformat(),
             "config_version": device.config_version,
             "user": device.user.username if device.user else None,

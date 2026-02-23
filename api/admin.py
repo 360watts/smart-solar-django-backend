@@ -12,8 +12,8 @@ from .models import (
 
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-	list_display = ("device_serial", "owner", "provisioned_at", "config_version")
-	search_fields = ("device_serial", "owner__username", "owner__email")
+	list_display = ("device_serial", "hw_id", "model", "user", "provisioned_at", "config_version")
+	search_fields = ("device_serial", "hw_id", "user__username", "user__email")
 	list_filter = ("provisioned_at",)
 
 

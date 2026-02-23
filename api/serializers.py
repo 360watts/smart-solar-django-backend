@@ -37,9 +37,9 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Device
-        fields = ['id', 'device_serial', 'user', 'provisioned_at', 'config_version',
+        fields = ['id', 'device_serial', 'hw_id', 'model', 'user', 'provisioned_at', 'config_version',
                   'created_by_username', 'created_at', 'updated_by_username', 'updated_at']
-        read_only_fields = ['id', 'provisioned_at']
+        read_only_fields = ['id', 'provisioned_at', 'hw_id', 'model']
 
     def get_created_by_username(self, obj):
         try:

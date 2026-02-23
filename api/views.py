@@ -213,7 +213,10 @@ def provision(request: Any) -> Response:
         device.provisioned_at = timezone.now()
         device.created_by = system_user
         device.updated_by = system_user
-        device.save()
+    # Always update hw_id and model so re-provisioning keeps them current
+    device.hw_id = data.get('hwId', '')
+    device.model = data.get('model', '')
+    device.save()
     
     logger.info(f"Device {'created' if created else 'found'}: {device_id}")
     

@@ -25,6 +25,8 @@ class UserProfile(models.Model):
 
 class Device(models.Model):
 	device_serial = models.CharField(max_length=64, unique=True)
+	hw_id = models.CharField(max_length=64, blank=True, null=True, help_text="MAC address or hardware ID sent at provisioning")
+	model = models.CharField(max_length=64, blank=True, null=True, help_text="Device model string sent at provisioning")
 	user = models.ForeignKey(User, related_name="devices", on_delete=models.SET_NULL, null=True, blank=True)
 	public_key_algorithm = models.CharField(max_length=32, blank=True, null=True)
 	csr_pem = models.TextField(blank=True, null=True)

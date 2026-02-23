@@ -5,6 +5,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
+from django.shortcuts import get_object_or_404
 from django.db import models, connection
 from django.db.models import Q, Avg, Sum, Count, F
 from django.db.models.functions import Coalesce
@@ -2158,12 +2159,28 @@ def device_site(request: Any, device_id: int) -> Response:
 
     if request.method == 'GET':
         try:
-            # Use select_related to efficiently load the device relationship
-            site = SolarSite.objects.select_related('device').filter(device_id=device.id).first()
+            # Query only by device_id, avoiding the Device FK join
+            site = SolarSite.objects.filter(device_id=device.id).first()
             if not site:
                 return Response(status=status.HTTP_204_NO_CONTENT)
-            serializer = SolarSiteSerializer(site)
-            return Response(serializer.data)
+            
+            # Manually serialize to avoid any FK issues
+            data = {
+                'id': site.id,
+                'device_id': site.device_id,
+                'site_id': site.site_id,
+                'display_name': site.display_name,
+                'latitude': site.latitude,
+                'longitude': site.longitude,
+                'capacity_kw': site.capacity_kw,
+                'tilt_deg': site.tilt_deg,
+                'azimuth_deg': site.azimuth_deg,
+                'timezone': site.timezone,
+                'is_active': site.is_active,
+                'created_at': site.created_at.isoformat() if site.created_at else None,
+                'updated_at': site.updated_at.isoformat() if site.updated_at else None,
+            }
+            return Response(data)
         except Exception as e:
             # Log error and return a proper error response
             import traceback

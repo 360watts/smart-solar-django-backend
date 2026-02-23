@@ -2105,7 +2105,7 @@ def user_site(request: Any, user_id: int) -> Response:
     if request.method == 'GET':
         site = SolarSite.objects.filter(device_id=device.id).first()
         if not site:
-            return Response(None, status=status.HTTP_200_OK)
+            return Response(status=status.HTTP_204_NO_CONTENT)
         return Response(SolarSiteSerializer(site).data)
 
     # POST — create
@@ -2243,7 +2243,7 @@ def site_weather(request: Any, site_id: str) -> Response:
             Limit=1,
         )
         items = _convert_decimals(resp.get('Items', []))
-        return Response(items[0] if items else None)
+        return Response(items[0] if items else None, status=status.HTTP_200_OK if items else status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         logger.error('DynamoDB weather error site=%s: %s', site_id, exc)
-        return Response(None, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)

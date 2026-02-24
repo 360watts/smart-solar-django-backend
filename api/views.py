@@ -494,6 +494,8 @@ def logs(request: Any, device_id: str) -> Response:
     ESP32 sends log data when sendLogs is enabled in heartbeat
     Requires device JWT authentication
     """
+    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}")
+    
     # Authenticate device
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
     if not is_valid:
@@ -506,21 +508,28 @@ def logs(request: Any, device_id: str) -> Response:
         return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
     
     # Extract log data from request
-    logs_data = request.data.get('logs', [])
-    if not isinstance(logs_data, list):
-        logs_data = [request.data]  # Single log entry
+    try:
+        logs_data = request.data.get('logs', [])
+        if not isinstance(logs_data, list):
+            logs_data = [request.data]  # Single log entry
+    except Exception as e:
+        logger.error(f"Failed to parse logs data from {device_id}: {e}")
+        return Response({"error": "Invalid log data format"}, status=status.HTTP_400_BAD_REQUEST)
     
     # Save logs to database
+    saved_count = 0
     for log_entry in logs_data:
-        DeviceLog.objects.create(
-            device=device,
-            log_level=log_entry.get('level', 'INFO'),
-            message=log_entry.get('message', ''),
-            metadata=log_entry.get('metadata', {})
-        )
+        if isinstance(log_entry, dict):
+            DeviceLog.objects.create(
+                device=device,
+                log_level=log_entry.get('level', 'INFO'),
+                message=log_entry.get('message', ''),
+                metadata=log_entry.get('metadata', {})
+            )
+            saved_count += 1
     
-    logger.info(f"Logs from {device_id}: {len(logs_data)} items stored")
-    return Response({"status": "stored", "count": len(logs_data)}, status=status.HTTP_200_OK)
+    logger.info(f"Logs from {device_id}: {saved_count}/{len(logs_data)} items stored")
+    return Response({"status": "stored", "count": saved_count}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -2656,7 +2665,7 @@ def site_telemetry(request: Any, site_id: str) -> Response:
         return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
     try:
         table = _get_dynamo_table()
-        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        now_utc = datetime.now(datetime.timezone.utc)
         
         # Parse date range from query params
         days = request.GET.get('days')

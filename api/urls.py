@@ -4,15 +4,33 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 
 urlpatterns = [
+	# Device provisioning and listing
 	path("devices/provision", views.provision, name="provision"),
+	path("devices/", views.devices_list, name="devices_list"),
+	path("devices/create/", views.create_device, name="create_device"),
+	path("devices/delete-bulk/", views.delete_devices_bulk, name="delete_devices_bulk"),
+	
+	# Device endpoints by integer ID (for admin/frontend)
+	path("devices/<int:device_id>/", views.update_device, name="update_device"),
+	path("devices/<int:device_id>/delete/", views.delete_device, name="delete_device"),
+	path("devices/<int:device_id>/reboot/", views.reboot_device, name="reboot_device"),
+	path("devices/<int:device_id>/hard-reset/", views.hard_reset_device, name="hard_reset_device"),
+	path("devices/<int:device_id>/rollback/", views.rollback_device, name="rollback_device"),
+	path("devices/<int:device_id>/logs/", views.device_logs_retrieve, name="device_logs_retrieve"),
+	path("devices/<int:device_id>/logs/toggle/", views.toggle_device_logs, name="toggle_device_logs"),
+	path("devices/<int:device_id>/site/", views.device_site, name="device_site"),
+	path("devices/<int:device_id>/site/update/", views.device_site_update, name="device_site_update"),
+	
+	# Device endpoints by serial (for ESP32/device communication)
 	path("devices/<str:device_id>/config", views.gateway_config, name="gateway_config"),
 	path("devices/<str:device_id>/heartbeat", views.heartbeat, name="heartbeat"),
 	path("devices/<str:device_id>/configAck", views.config_ack, name="config_ack"),
 	path("devices/<str:device_id>/logs", views.logs, name="logs"),
 	path("devices/<str:device_id>/deviceLogs", views.logs, name="device_logs"),
-	path("telemetry/ingest", views.telemetry_ingest, name="telemetry_ingest"),
 	path("devices/<str:device_serial>/telemetry/latest", views.telemetry_latest, name="telemetry_latest"),
-	path("devices/", views.devices_list, name="devices_list"),
+	
+	# Telemetry and monitoring
+	path("telemetry/ingest", views.telemetry_ingest, name="telemetry_ingest"),
 	path("config/", views.config_get, name="config_get"),
 	path("telemetry/", views.telemetry_all, name="telemetry_all"),
 	path("alerts/", views.alerts_list, name="alerts_list"),
@@ -31,10 +49,6 @@ urlpatterns = [
 	path("users/<int:user_id>/site/", views.user_site, name="user_site"),
 	path("users/<int:user_id>/site/update/", views.user_site_update, name="user_site_update"),
 
-	# Device-centric site endpoints
-	path("devices/<int:device_id>/site/", views.device_site, name="device_site"),
-	path("devices/<int:device_id>/site/update/", views.device_site_update, name="device_site_update"),
-
 	# DynamoDB site data endpoints
 	path("sites/<str:site_id>/telemetry/", views.site_telemetry, name="site_telemetry"),
 	path("sites/<str:site_id>/forecast/", views.site_forecast, name="site_forecast"),
@@ -45,19 +59,13 @@ urlpatterns = [
 	path("profile/update/", views.update_profile, name="update_profile"),
 	path("profile/change-password/", views.change_password, name="change_password"),
 	
+	# Configuration presets
 	path("presets/", views.presets_list, name="presets_list"),
 	path("presets/create/", views.create_preset, name="create_preset"),
 	path("presets/<int:preset_id>/", views.update_preset, name="update_preset"),
 	path("presets/<int:preset_id>/delete/", views.delete_preset, name="delete_preset"),
-	path("devices/create/", views.create_device, name="create_device"),
-	path("devices/<int:device_id>/", views.update_device, name="update_device"),
-	path("devices/<int:device_id>/delete/", views.delete_device, name="delete_device"),
-	path("devices/<int:device_id>/reboot/", views.reboot_device, name="reboot_device"),
-	path("devices/<int:device_id>/hard-reset/", views.hard_reset_device, name="hard_reset_device"),
-	path("devices/<int:device_id>/rollback/", views.rollback_device, name="rollback_device"),
-	path("devices/<int:device_id>/logs/", views.device_logs_retrieve, name="device_logs_retrieve"),
-	path("devices/<int:device_id>/logs/toggle/", views.toggle_device_logs, name="toggle_device_logs"),
-	path("devices/delete-bulk/", views.delete_devices_bulk, name="delete_devices_bulk"),
+	
+	# Slave devices
 	path("slaves/", views.global_slaves_list, name="global_slaves_list"),
 	path("slaves/create/", views.global_slave_create, name="global_slave_create"),
 	path("slaves/<int:slave_pk>/", views.global_slave_update, name="global_slave_update"),

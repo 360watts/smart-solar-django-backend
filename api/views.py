@@ -543,6 +543,8 @@ def logs(request: Any, device_id: str) -> Response:
     # Extract log data from request - handle both JSON and plain text
     logs_data = []
     try:
+        logger.info(f"Request data from {device_id}: {request.data}")
+        
         # Check if request.data is a string (from PlainTextParser)
         if isinstance(request.data, str):
             body_text = request.data.strip()
@@ -554,9 +556,24 @@ def logs(request: Any, device_id: str) -> Response:
                 }]
         # Try to parse as JSON dict
         elif isinstance(request.data, dict):
-            logs_data = request.data.get('logs', [])
-            if not isinstance(logs_data, list):
-                logs_data = [request.data]
+            # Check if it has a 'logs' key with actual data
+            if 'logs' in request.data and request.data['logs']:
+                logs_data = request.data['logs']
+                if not isinstance(logs_data, list):
+                    logs_data = [logs_data]
+            else:
+                # No 'logs' key or empty - treat entire dict as a single log entry
+                # Filter out authentication fields
+                log_entry = {k: v for k, v in request.data.items() if k not in ['secret', 'deviceId']}
+                if log_entry:
+                    # Extract level and message if present, otherwise convert to string
+                    level = log_entry.pop('level', 'INFO')
+                    message = log_entry.pop('message', str(request.data))
+                    logs_data = [{
+                        'level': level,
+                        'message': message,
+                        'metadata': log_entry
+                    }]
         elif isinstance(request.data, list):
             logs_data = request.data
         else:

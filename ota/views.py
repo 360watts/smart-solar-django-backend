@@ -685,11 +685,15 @@ def trigger_single_device_update(request):
         )
         
         # Create initial update log for tracking
+        # Try to get current firmware from existing logs, fallback to 'unknown'
+        existing_log = DeviceUpdateLog.objects.filter(device=device).order_by('-last_checked_at').first()
+        current_fw = existing_log.current_firmware if existing_log else 'unknown'
+        
         DeviceUpdateLog.objects.update_or_create(
             device=device,
             firmware_version=firmware,
             defaults={
-                'current_firmware': device.firmware_version or 'unknown',
+                'current_firmware': current_fw,
                 'status': DeviceUpdateLog.Status.PENDING,
                 'attempt_count': 0
             }
@@ -848,11 +852,15 @@ def trigger_multi_device_update(request):
             )
             
             # Create initial update log for tracking
+            # Try to get current firmware from existing logs, fallback to 'unknown'
+            existing_log = DeviceUpdateLog.objects.filter(device=device).order_by('-last_checked_at').first()
+            current_fw = existing_log.current_firmware if existing_log else 'unknown'
+            
             DeviceUpdateLog.objects.update_or_create(
                 device=device,
                 firmware_version=firmware,
                 defaults={
-                    'current_firmware': device.firmware_version or 'unknown',
+                    'current_firmware': current_fw,
                     'status': DeviceUpdateLog.Status.PENDING,
                     'attempt_count': 0
                 }
@@ -955,6 +963,7 @@ def trigger_version_based_update(request):
             )
             
             # Create initial update log for tracking
+            # For version-based updates, we know the source version
             DeviceUpdateLog.objects.update_or_create(
                 device=device,
                 firmware_version=firmware,

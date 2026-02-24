@@ -27,7 +27,7 @@ from ota.models import DeviceTargetedFirmware
 import logging
 import jwt
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 # Get JWT secret from environment variable with secure fallback
 DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
@@ -2665,7 +2665,7 @@ def site_telemetry(request: Any, site_id: str) -> Response:
         return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
     try:
         table = _get_dynamo_table()
-        now_utc = datetime.now(datetime.timezone.utc)
+        now_utc = datetime.now(dt_timezone.utc)
         
         # Parse date range from query params
         days = request.GET.get('days')

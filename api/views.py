@@ -1,7 +1,8 @@
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
@@ -34,6 +35,22 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
 
 logger = logging.getLogger(__name__)
+
+
+# ============== CUSTOM PARSERS ==============
+
+class PlainTextParser:
+    """
+    Parser that accepts any content and doesn't fail on invalid JSON.
+    Used for device log endpoints where ESP32 might send plain text.
+    """
+    media_type = '*/*'
+    
+    def parse(self, stream, media_type=None, parser_context=None):
+        """
+        Simply return the raw data without parsing.
+        """
+        return stream.read().decode('utf-8')
 
 
 # ============== AUDIT TRAIL UTILITIES ==============
@@ -489,6 +506,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@parser_classes([JSONParser, PlainTextParser])
 def logs(request: Any, device_id: str) -> Response:
     """
     Logs endpoint: /api/devices/{device_id}/logs or /api/devices/{device_id}/deviceLogs
@@ -496,7 +514,7 @@ def logs(request: Any, device_id: str) -> Response:
     Accepts both JSON format {"logs": [...]} and plain text log messages
     Requires device JWT authentication
     """
-    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}")
+    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}, Data type: {type(request.data)}")
     
     # Authenticate device
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
@@ -513,15 +531,24 @@ def logs(request: Any, device_id: str) -> Response:
     # Extract log data from request - handle both JSON and plain text
     logs_data = []
     try:
-        # Try to parse as JSON first
-        if isinstance(request.data, dict):
+        # Check if request.data is a string (from PlainTextParser)
+        if isinstance(request.data, str):
+            body_text = request.data.strip()
+            if body_text:
+                logs_data = [{
+                    'level': 'INFO',
+                    'message': body_text,
+                    'metadata': {}
+                }]
+        # Try to parse as JSON dict
+        elif isinstance(request.data, dict):
             logs_data = request.data.get('logs', [])
             if not isinstance(logs_data, list):
                 logs_data = [request.data]
         elif isinstance(request.data, list):
             logs_data = request.data
         else:
-            # Fall back to plain text - treat entire body as a single log message
+            # Last fallback to raw body
             body_text = request.body.decode('utf-8') if isinstance(request.body, bytes) else str(request.body)
             if body_text and body_text.strip():
                 logs_data = [{

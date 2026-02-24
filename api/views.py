@@ -590,8 +590,12 @@ def devices_list(request: Any) -> Response:
     except (ValueError, TypeError):
         return Response({"error": "Invalid page or page_size parameter. Must be integers."}, status=status.HTTP_400_BAD_REQUEST)
     
-    # Optimize query: only fetch related data we need (including audit fields)
-    devices = Device.objects.select_related('user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
+    # Optimize query: only fetch related data we need (including audit fields if they exist)
+    try:
+        devices = Device.objects.select_related('user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
+    except Exception:
+        # Fallback if audit fields don't exist yet (pre-migration)
+        devices = Device.objects.select_related('user').all().order_by("-provisioned_at")
 
     # Apply search filter
     if search:
@@ -611,7 +615,7 @@ def devices_list(request: Any) -> Response:
     # Format device data
     data = []
     for device in paginated_devices:
-        data.append({
+        device_data = {
             "id": device.id,
             "device_serial": device.device_serial,
             "hw_id": device.hw_id,
@@ -626,11 +630,26 @@ def devices_list(request: Any) -> Response:
             "config_ack_ver": device.config_ack_ver,
             "config_downloaded_at": device.config_downloaded_at.isoformat() if device.config_downloaded_at else None,
             "config_acked_at": device.config_acked_at.isoformat() if device.config_acked_at else None,
-            "created_by_username": device.created_by.username if device.created_by else None,
-            "created_at": device.provisioned_at.isoformat(),
-            "updated_by_username": device.updated_by.username if device.updated_by else None,
-            "updated_at": device.updated_at.isoformat() if device.updated_at else None,
-        })
+        }
+        
+        # Safely add audit fields if they exist
+        if hasattr(device, 'created_by'):
+            device_data["created_by_username"] = device.created_by.username if device.created_by else None
+        else:
+            device_data["created_by_username"] = None
+            
+        if hasattr(device, 'updated_at'):
+            device_data["updated_at"] = device.updated_at.isoformat() if device.updated_at else None
+        else:
+            device_data["updated_at"] = None
+            
+        if hasattr(device, 'updated_by'):
+            device_data["updated_by_username"] = device.updated_by.username if device.updated_by else None
+        else:
+            device_data["updated_by_username"] = None
+        
+        device_data["created_at"] = device.provisioned_at.isoformat()
+        data.append(device_data)
     
     # Return paginated response
     total_pages = (total_count + page_size - 1) // page_size

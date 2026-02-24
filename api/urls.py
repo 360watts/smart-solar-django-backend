@@ -54,6 +54,7 @@ urlpatterns = [
 	path("devices/<int:device_id>/delete/", views.delete_device, name="delete_device"),
 	path("devices/<int:device_id>/reboot/", views.reboot_device, name="reboot_device"),
 	path("devices/<int:device_id>/hard-reset/", views.hard_reset_device, name="hard_reset_device"),
+	path("devices/<int:device_id>/rollback/", views.rollback_device, name="rollback_device"),
 	path("devices/<int:device_id>/logs/", views.device_logs_retrieve, name="device_logs_retrieve"),
 	path("devices/<int:device_id>/logs/toggle/", views.toggle_device_logs, name="toggle_device_logs"),
 	path("devices/delete-bulk/", views.delete_devices_bulk, name="delete_devices_bulk"),

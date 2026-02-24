@@ -38,6 +38,7 @@ class Device(models.Model):
 	last_heartbeat = models.DateTimeField(null=True, blank=True, help_text="Last time device sent a heartbeat")
 	pending_reboot = models.BooleanField(default=False, help_text="Flag to trigger device reboot on next heartbeat")
 	pending_hard_reset = models.BooleanField(default=False, help_text="Flag to trigger device hard reset on next heartbeat")
+	pending_rollback = models.BooleanField(default=False, help_text="Flag to trigger firmware rollback on next heartbeat")
 	pending_config_update = models.BooleanField(default=False, help_text="Set when preset/slave changes so device fetches config on next heartbeat")
 	logs_enabled = models.BooleanField(default=False, help_text="Enable device to send logs")
 	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_created')

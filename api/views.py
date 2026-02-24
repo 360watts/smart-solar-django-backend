@@ -447,12 +447,24 @@ def heartbeat(request: Any, device_id: str) -> Response:
     
     # Check for pending firmware update (OTA)
     update_firmware_needed = 0
-    try:
-        if hasattr(device, 'targeted_firmware') and device.targeted_firmware.is_active:
-            update_firmware_needed = 1
-            logger.info(f"Firmware update available for device {device_id}: {device.targeted_firmware.target_firmware.version}")
-    except DeviceTargetedFirmware.DoesNotExist:
-        pass
+    
+    # First check for rollback flag (highest priority)
+    if device.pending_rollback:
+        update_firmware_needed = 2  # Rollback command
+        logger.info(f"Firmware rollback command queued for device {device_id}")
+        # Clear the flag after sending command once
+        device.pending_rollback = False
+        device.save(update_fields=['pending_rollback'])
+    else:
+        # Check for targeted firmware update
+        try:
+            if hasattr(device, 'targeted_firmware') and device.targeted_firmware.is_active:
+                # Only return update command for non-rollback targeted updates
+                if not device.targeted_firmware.is_rollback:
+                    update_firmware_needed = 1  # New firmware update
+                    logger.info(f"Firmware update available for device {device_id}: {device.targeted_firmware.target_firmware.version}")
+        except DeviceTargetedFirmware.DoesNotExist:
+            pass
     
     # Check if device should send logs
     send_logs = 1 if device.logs_enabled else 0
@@ -1555,6 +1567,35 @@ def hard_reset_device(request, device_id):
         'device_id': device.id,
         'device_serial': device.device_serial,
         'pending_hard_reset': True
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffUser])
+def rollback_device(request, device_id):
+    """
+    Trigger a firmware rollback by setting pending_rollback flag.
+    The device must already have the previous firmware stored locally.
+    The next heartbeat will return updateFirmware: 2 command and clear the flag.
+    Requires staff authentication.
+    """
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Set rollback flag
+    device.pending_rollback = True
+    device.save(update_fields=['pending_rollback'])
+    
+    logger.info(f"Rollback command queued for device {device.device_serial} by user {request.user}")
+    
+    return Response({
+        'message': f'Rollback command queued for device {device.device_serial}',
+        'device_id': device.id,
+        'device_serial': device.device_serial,
+        'pending_rollback': True,
+        'info': 'Device will receive updateFirmware: 2 flag on next heartbeat'
     })
 
 

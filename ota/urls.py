@@ -25,6 +25,7 @@ urlpatterns = [
     path('updates/single/', views.trigger_single_device_update, name='trigger_single_update'),
     path('updates/multiple/', views.trigger_multi_device_update, name='trigger_multi_update'),
     path('updates/version-based/', views.trigger_version_based_update, name='trigger_version_update'),
+    path('updates/rollback/', views.trigger_rollback, name='trigger_rollback'),
     path('updates/', views.list_targeted_updates, name='list_targeted_updates'),
     path('updates/<int:update_id>/', views.get_targeted_update, name='get_targeted_update'),
     path('updates/<int:update_id>/cancel/', views.cancel_targeted_update, name='cancel_targeted_update'),

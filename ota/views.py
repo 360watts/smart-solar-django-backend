@@ -679,7 +679,8 @@ def trigger_single_device_update(request):
             defaults={
                 'target_firmware': firmware,
                 'targeted_update': targeted_update,
-                'is_active': True
+                'is_active': True,
+                'is_rollback': False  # Normal firmware update
             }
         )
         
@@ -698,6 +699,63 @@ def trigger_single_device_update(request):
         logger.error(f"Single Device Update Error: {str(e)}")
         return Response(
             {'error': f'Failed to trigger update: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def trigger_rollback(request):
+    """
+    Trigger firmware rollback for a single device.
+    The device must already have the previous firmware stored locally.
+    This simply sends a rollback command (updateFirmware: 2) via heartbeat.
+    
+    Request body:
+    {
+        "device_serial": "STM32-001",
+        "notes": "Optional notes"
+    }
+    """
+    try:
+        device_serial = request.data.get('device_serial')
+        notes = request.data.get('notes', '')
+        
+        if not device_serial:
+            return Response(
+                {'error': 'device_serial is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate device exists
+        try:
+            device = Device.objects.get(device_serial=device_serial)
+        except Device.DoesNotExist:
+            return Response(
+                {'error': f'Device {device_serial} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Set the rollback flag - device will receive updateFirmware: 2 on next heartbeat
+        device.pending_rollback = True
+        device.save(update_fields=['pending_rollback'])
+        
+        logger.info(
+            f"Rollback Command Triggered - Device: {device_serial}, "
+            f"By: {request.user.username}, Notes: {notes}"
+        )
+        
+        return Response({
+            'message': f'Rollback command queued for device {device_serial}',
+            'device_serial': device_serial,
+            'notes': notes,
+            'info': 'Device will receive updateFirmware: 2 flag on next heartbeat'
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Rollback Error: {str(e)}")
+        return Response(
+            {'error': f'Failed to trigger rollback: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -773,7 +831,8 @@ def trigger_multi_device_update(request):
                 defaults={
                     'target_firmware': firmware,
                     'targeted_update': targeted_update,
-                    'is_active': True
+                    'is_active': True,
+                    'is_rollback': False  # Normal firmware update
                 }
             )
         
@@ -868,7 +927,8 @@ def trigger_version_based_update(request):
                 defaults={
                     'target_firmware': firmware,
                     'targeted_update': targeted_update,
-                    'is_active': True
+                    'is_active': True,
+                    'is_rollback': False  # Normal firmware update
                 }
             )
         

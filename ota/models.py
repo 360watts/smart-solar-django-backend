@@ -180,6 +180,7 @@ class DeviceTargetedFirmware(models.Model):
     target_firmware = models.ForeignKey(FirmwareVersion, on_delete=models.CASCADE)
     targeted_update = models.ForeignKey(TargetedUpdate, on_delete=models.CASCADE, null=True, blank=True, related_name='device_targets')
     is_active = models.BooleanField(default=True, db_index=True, help_text="Whether this target is still active")
+    is_rollback = models.BooleanField(default=False, help_text="Whether this is a rollback operation")
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     

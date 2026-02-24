@@ -27,6 +27,7 @@ from ota.models import DeviceTargetedFirmware
 import logging
 import jwt
 import secrets
+import traceback
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 # Get JWT secret from environment variable with secure fallback
@@ -494,7 +495,7 @@ def logs(request: Any, device_id: str) -> Response:
     ESP32 sends log data when sendLogs is enabled in heartbeat
     Requires device JWT authentication
     """
-    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}")
+    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}, Body: {request.body[:200]}")
     
     # Authenticate device
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
@@ -505,16 +506,21 @@ def logs(request: Any, device_id: str) -> Response:
     try:
         device = Device.objects.get(device_serial=device_id)
     except Device.DoesNotExist:
+        logger.error(f"Device not found: {device_id}")
         return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    logger.info(f"Device found: {device_id}, logs_enabled={device.logs_enabled}")
     
     # Extract log data from request
     try:
+        logger.info(f"Request data type: {type(request.data)}, data: {request.data}")
         logs_data = request.data.get('logs', [])
         if not isinstance(logs_data, list):
             logs_data = [request.data]  # Single log entry
+        logger.info(f"Parsed {len(logs_data)} log entries")
     except Exception as e:
-        logger.error(f"Failed to parse logs data from {device_id}: {e}")
-        return Response({"error": "Invalid log data format"}, status=status.HTTP_400_BAD_REQUEST)
+        logger.error(f"Failed to parse logs data from {device_id}: {e}, traceback: {traceback.format_exc()}")
+        return Response({"error": f"Invalid log data format: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
     
     # Save logs to database
     saved_count = 0

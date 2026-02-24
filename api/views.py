@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes, parser_class
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
-from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser, BaseParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
@@ -39,18 +39,30 @@ logger = logging.getLogger(__name__)
 
 # ============== CUSTOM PARSERS ==============
 
-class PlainTextParser:
+class PlainTextParser(BaseParser):
     """
     Parser that accepts any content and doesn't fail on invalid JSON.
     Used for device log endpoints where ESP32 might send plain text.
+    Tries to parse as JSON first, falls back to plain text.
     """
     media_type = '*/*'
     
     def parse(self, stream, media_type=None, parser_context=None):
         """
-        Simply return the raw data without parsing.
+        Try JSON parsing first, fall back to plain text if that fails.
         """
-        return stream.read().decode('utf-8')
+        import json
+        try:
+            data = stream.read()
+            # Try to parse as JSON first
+            try:
+                return json.loads(data.decode('utf-8'))
+            except (json.JSONDecodeError, ValueError):
+                # Fall back to plain text
+                return data.decode('utf-8')
+        except Exception as e:
+            logger.warning(f"PlainTextParser failed to decode: {e}")
+            return ""
 
 
 # ============== AUDIT TRAIL UTILITIES ==============
@@ -506,7 +518,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@parser_classes([JSONParser, PlainTextParser])
+@parser_classes([PlainTextParser])
 def logs(request: Any, device_id: str) -> Response:
     """
     Logs endpoint: /api/devices/{device_id}/logs or /api/devices/{device_id}/deviceLogs

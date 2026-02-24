@@ -717,14 +717,16 @@ def trigger_single_device_update(request):
         existing_log = DeviceUpdateLog.objects.filter(device=device).order_by('-last_checked_at').first()
         current_fw = existing_log.current_firmware if existing_log else 'unknown'
         
-        DeviceUpdateLog.objects.update_or_create(
+        # Delete any existing logs for this device+firmware to avoid duplicates
+        DeviceUpdateLog.objects.filter(device=device, firmware_version=firmware).delete()
+        
+        # Create fresh log for this deployment
+        DeviceUpdateLog.objects.create(
             device=device,
             firmware_version=firmware,
-            defaults={
-                'current_firmware': current_fw,
-                'status': DeviceUpdateLog.Status.PENDING,
-                'attempt_count': 0
-            }
+            current_firmware=current_fw,
+            status=DeviceUpdateLog.Status.PENDING,
+            attempt_count=0
         )
         
         targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
@@ -884,14 +886,16 @@ def trigger_multi_device_update(request):
             existing_log = DeviceUpdateLog.objects.filter(device=device).order_by('-last_checked_at').first()
             current_fw = existing_log.current_firmware if existing_log else 'unknown'
             
-            DeviceUpdateLog.objects.update_or_create(
+            # Delete any existing logs for this device+firmware to avoid duplicates
+            DeviceUpdateLog.objects.filter(device=device, firmware_version=firmware).delete()
+            
+            # Create fresh log for this deployment
+            DeviceUpdateLog.objects.create(
                 device=device,
                 firmware_version=firmware,
-                defaults={
-                    'current_firmware': current_fw,
-                    'status': DeviceUpdateLog.Status.PENDING,
-                    'attempt_count': 0
-                }
+                current_firmware=current_fw,
+                status=DeviceUpdateLog.Status.PENDING,
+                attempt_count=0
             )
         
         targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
@@ -992,14 +996,16 @@ def trigger_version_based_update(request):
             
             # Create initial update log for tracking
             # For version-based updates, we know the source version
-            DeviceUpdateLog.objects.update_or_create(
+            # Delete any existing logs for this device+firmware to avoid duplicates
+            DeviceUpdateLog.objects.filter(device=device, firmware_version=firmware).delete()
+            
+            # Create fresh log for this deployment
+            DeviceUpdateLog.objects.create(
                 device=device,
                 firmware_version=firmware,
-                defaults={
-                    'current_firmware': source_version,
-                    'status': DeviceUpdateLog.Status.PENDING,
-                    'attempt_count': 0
-                }
+                current_firmware=source_version,
+                status=DeviceUpdateLog.Status.PENDING,
+                attempt_count=0
             )
         
         targeted_update.status = TargetedUpdate.Status.IN_PROGRESS

@@ -684,6 +684,17 @@ def trigger_single_device_update(request):
             }
         )
         
+        # Create initial update log for tracking
+        DeviceUpdateLog.objects.update_or_create(
+            device=device,
+            firmware_version=firmware,
+            defaults={
+                'current_firmware': device.firmware_version or 'unknown',
+                'status': DeviceUpdateLog.Status.PENDING,
+                'attempt_count': 0
+            }
+        )
+        
         targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
         targeted_update.save()
         
@@ -835,6 +846,17 @@ def trigger_multi_device_update(request):
                     'is_rollback': False  # Normal firmware update
                 }
             )
+            
+            # Create initial update log for tracking
+            DeviceUpdateLog.objects.update_or_create(
+                device=device,
+                firmware_version=firmware,
+                defaults={
+                    'current_firmware': device.firmware_version or 'unknown',
+                    'status': DeviceUpdateLog.Status.PENDING,
+                    'attempt_count': 0
+                }
+            )
         
         targeted_update.status = TargetedUpdate.Status.IN_PROGRESS
         targeted_update.save()
@@ -929,6 +951,17 @@ def trigger_version_based_update(request):
                     'targeted_update': targeted_update,
                     'is_active': True,
                     'is_rollback': False  # Normal firmware update
+                }
+            )
+            
+            # Create initial update log for tracking
+            DeviceUpdateLog.objects.update_or_create(
+                device=device,
+                firmware_version=firmware,
+                defaults={
+                    'current_firmware': source_version,
+                    'status': DeviceUpdateLog.Status.PENDING,
+                    'attempt_count': 0
                 }
             )
         

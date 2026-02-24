@@ -124,7 +124,7 @@ class DeviceAuthentication:
             token = auth_header.split(' ')[1]
         elif 'token' in request.GET:
             token = request.GET.get('token')
-        elif 'secret' in request.data:
+        elif isinstance(request.data, dict) and 'secret' in request.data:
             token = request.data.get('secret')
         
         if not token:

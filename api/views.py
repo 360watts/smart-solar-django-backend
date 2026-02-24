@@ -493,9 +493,10 @@ def logs(request: Any, device_id: str) -> Response:
     """
     Logs endpoint: /api/devices/{device_id}/logs or /api/devices/{device_id}/deviceLogs
     ESP32 sends log data when sendLogs is enabled in heartbeat
+    Accepts both JSON format {"logs": [...]} and plain text log messages
     Requires device JWT authentication
     """
-    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}, Body: {request.body[:200]}")
+    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}")
     
     # Authenticate device
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
@@ -509,18 +510,40 @@ def logs(request: Any, device_id: str) -> Response:
         logger.error(f"Device not found: {device_id}")
         return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
     
-    logger.info(f"Device found: {device_id}, logs_enabled={device.logs_enabled}")
-    
-    # Extract log data from request
+    # Extract log data from request - handle both JSON and plain text
+    logs_data = []
     try:
-        logger.info(f"Request data type: {type(request.data)}, data: {request.data}")
-        logs_data = request.data.get('logs', [])
-        if not isinstance(logs_data, list):
-            logs_data = [request.data]  # Single log entry
-        logger.info(f"Parsed {len(logs_data)} log entries")
+        # Try to parse as JSON first
+        if isinstance(request.data, dict):
+            logs_data = request.data.get('logs', [])
+            if not isinstance(logs_data, list):
+                logs_data = [request.data]
+        elif isinstance(request.data, list):
+            logs_data = request.data
+        else:
+            # Fall back to plain text - treat entire body as a single log message
+            body_text = request.body.decode('utf-8') if isinstance(request.body, bytes) else str(request.body)
+            if body_text and body_text.strip():
+                logs_data = [{
+                    'level': 'INFO',
+                    'message': body_text.strip(),
+                    'metadata': {}
+                }]
+        
+        logger.info(f"Parsed {len(logs_data)} log entries from {device_id}")
     except Exception as e:
         logger.error(f"Failed to parse logs data from {device_id}: {e}, traceback: {traceback.format_exc()}")
-        return Response({"error": f"Invalid log data format: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+        # Even on parse error, try to save the raw body as a log
+        try:
+            body_text = request.body.decode('utf-8') if isinstance(request.body, bytes) else str(request.body)
+            if body_text and body_text.strip():
+                logs_data = [{
+                    'level': 'ERROR',
+                    'message': f"Parse error - raw content: {body_text[:500]}",
+                    'metadata': {'parse_error': str(e)}
+                }]
+        except:
+            return Response({"error": f"Invalid log data format: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
     
     # Save logs to database
     saved_count = 0

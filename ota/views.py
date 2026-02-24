@@ -27,6 +27,7 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from botocore.config import Config
 
 
 @api_view(['POST', 'GET'])
@@ -194,15 +195,32 @@ def ota_check(request, device_id):
                 is_s3 = False
 
             if is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
+                # Configure S3 client with explicit config for regional endpoints
+                s3_config = Config(
+                    signature_version='s3v4',
+                    s3={'addressing_style': 'path'}  # Use path-style URLs: s3.region.amazonaws.com/bucket/key
+                )
+                
                 s3_client = boto3.client(
                     's3',
                     aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
                     aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
                     region_name=getattr(settings, 'AWS_S3_REGION_NAME', None),
                     endpoint_url=getattr(settings, 'AWS_S3_ENDPOINT_URL', None) or None,
+                    config=s3_config
                 )
-                key = latest_firmware.file.name
+                # Build full S3 key with AWS_LOCATION prefix if needed
+                file_name = latest_firmware.file.name
+                aws_location = getattr(settings, 'AWS_LOCATION', '')
+                
+                # If file_name doesn't already include the location prefix, add it
+                if aws_location and not file_name.startswith(aws_location + '/'):
+                    key = f"{aws_location}/{file_name}"
+                else:
+                    key = file_name
+                
                 expires = getattr(settings, 'AWS_PRESIGNED_URL_EXPIRATION', 300)
+                logger.debug(f"Generating presigned URL - Bucket: {settings.AWS_STORAGE_BUCKET_NAME}, Key: {key}")
                 try:
                     presigned = s3_client.generate_presigned_url(
                         'get_object',
@@ -212,6 +230,7 @@ def ota_check(request, device_id):
                     download_url = presigned
                     url_type = 's3_presigned'
                     url_ttl = int(expires)
+                    logger.info(f"Generated presigned URL for firmware {latest_firmware.version}: {presigned}")
                 except (BotoCoreError, ClientError) as e:
                     logger.warning(f"Presigned URL generation failed, falling back to proxy download: {e}")
 

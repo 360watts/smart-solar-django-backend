@@ -38,7 +38,7 @@ class FirmwareVersion(models.Model):
     
     version = models.CharField(max_length=32, unique=True, help_text="e.g., 0x00020000")
     filename = models.CharField(max_length=255)
-    file = models.FileField(upload_to='firmware/', storage=firmware_storage, help_text="Firmware binary file")
+    file = models.FileField(upload_to='', storage=firmware_storage, help_text="Firmware binary file")
     size = models.PositiveIntegerField(help_text="File size in bytes")
     checksum = models.CharField(max_length=64, blank=True, null=True, help_text="SHA256 checksum")
     description = models.TextField(blank=True, null=True)

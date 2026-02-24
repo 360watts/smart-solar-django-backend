@@ -74,25 +74,54 @@ def ota_check(request, device_id):
         # Log the check request
         logger.info(f"OTA Check - Device: {device_id}, Current FW: {current_firmware}")
         
-        # Get or create update log
-        update_log, created = DeviceUpdateLog.objects.get_or_create(
-            device=device,
-            current_firmware=current_firmware,
-            defaults={'status': DeviceUpdateLog.Status.CHECKING}
-        )
-        update_log.last_checked_at = timezone.now()
-        update_log.attempt_count += 1
-        
         # Check for device-specific firmware target first (targeted update)
         targeted_firmware = None
+        device_target = None
         try:
-            device_target = DeviceTargetedFirmware.objects.select_related('target_firmware').get(
+            device_target = DeviceTargetedFirmware.objects.select_related('target_firmware').filter(
                 device=device, is_active=True
-            )
-            targeted_firmware = device_target.target_firmware
-            logger.info(f"OTA Check - Device {device_id} has targeted firmware: {targeted_firmware.version}")
-        except DeviceTargetedFirmware.DoesNotExist:
-            pass
+            ).first()
+            if device_target:
+                targeted_firmware = device_target.target_firmware
+                logger.info(f"OTA Check - Device {device_id} has targeted firmware: {targeted_firmware.version}")
+        except Exception as e:
+            logger.error(f"Error getting targeted firmware: {e}")
+        
+        # Get or create update log - use firmware_version to make it unique
+        # If there's a targeted firmware, look for that specific log
+        if targeted_firmware:
+            update_log = DeviceUpdateLog.objects.filter(
+                device=device,
+                firmware_version=targeted_firmware
+            ).order_by('-last_checked_at').first()
+            
+            if not update_log:
+                # Create new log for this targeted update
+                update_log = DeviceUpdateLog.objects.create(
+                    device=device,
+                    firmware_version=targeted_firmware,
+                    current_firmware=current_firmware,
+                    status=DeviceUpdateLog.Status.CHECKING
+                )
+        else:
+            # No targeted firmware, get the most recent log for this device
+            update_log = DeviceUpdateLog.objects.filter(
+                device=device
+            ).order_by('-last_checked_at').first()
+            
+            if not update_log:
+                # Create new log
+                update_log = DeviceUpdateLog.objects.create(
+                    device=device,
+                    current_firmware=current_firmware,
+                    status=DeviceUpdateLog.Status.CHECKING
+                )
+        
+        # Update the log
+        update_log.last_checked_at = timezone.now()
+        update_log.current_firmware = current_firmware
+        update_log.attempt_count += 1
+        update_log.save()
         
         # If device has a specific target, use that; otherwise use global active firmware
         if targeted_firmware:
@@ -121,9 +150,8 @@ def ota_check(request, device_id):
             update_log.save()
             
             # If device target exists and device is now up to date, mark as complete
-            if targeted_firmware:
+            if targeted_firmware and device_target:
                 try:
-                    device_target = DeviceTargetedFirmware.objects.get(device=device, is_active=True)
                     device_target.is_active = False  # Mark target as fulfilled
                     device_target.save()
                     
@@ -136,8 +164,8 @@ def ota_check(request, device_id):
                             campaign.completed_at = timezone.now()
                         campaign.save()
                         logger.info(f"Device {device_id} completed targeted update to {latest_firmware.version}")
-                except DeviceTargetedFirmware.DoesNotExist:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error updating device target: {e}")
             
             return Response({
                 'id': 'none',

@@ -86,12 +86,34 @@ class TargetedUpdateSerializer(serializers.ModelSerializer):
     )
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     
+    # Include device targets for status tracking
+    device_targets = serializers.SerializerMethodField()
+    target_firmware = FirmwareVersionSerializer(read_only=True)
+    
+    def get_device_targets(self, obj):
+        """Return list of device targets with their status"""
+        from .models import DeviceTargetedFirmware
+        targets = DeviceTargetedFirmware.objects.filter(
+            targeted_update=obj
+        ).select_related('device', 'target_firmware')
+        
+        return [{
+            'id': t.id,
+            'device': {
+                'device_serial': t.device.device_serial,
+                'id': t.device.id
+            },
+            'is_active': t.is_active,
+            'created_at': t.created_at,
+        } for t in targets]
+    
     class Meta:
         model = TargetedUpdate
         fields = [
             'id',
             'update_type',
             'target_firmware_id',
+            'target_firmware',
             'target_firmware_version',
             'source_version',
             'status',
@@ -103,9 +125,10 @@ class TargetedUpdateSerializer(serializers.ModelSerializer):
             'completed_at',
             'notes',
             'target_device_serials',
+            'device_targets',
         ]
         read_only_fields = ['id', 'status', 'devices_total', 'devices_updated', 'devices_failed', 
-                           'created_at', 'completed_at', 'created_by_username']
+                           'created_at', 'completed_at', 'created_by_username', 'device_targets', 'target_firmware']
 
 
 class DeviceTargetedFirmwareSerializer(serializers.ModelSerializer):

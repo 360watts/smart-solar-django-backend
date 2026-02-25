@@ -2839,12 +2839,21 @@ def site_forecast(request: Any, site_id: str) -> Response:
                     target_date = datetime.utcnow().strftime('%Y-%m-%d')
             else:
                 target_date = datetime.utcnow().strftime('%Y-%m-%d')
+            
+            query_prefix = f'FORECAST#{target_date}'
+            logger.info('DynamoDB forecast query: site_id=%s, timestamp begins_with=%s', site_id, query_prefix)
                 
             resp = table.query(
                 KeyConditionExpression=DynamoKey('site_id').eq(site_id)
-                    & DynamoKey('timestamp').begins_with(f'FORECAST#{target_date}'),
+                    & DynamoKey('timestamp').begins_with(query_prefix),
                 ScanIndexForward=True,
             )
+            
+            items = resp.get('Items', [])
+            logger.info('DynamoDB forecast result: %d items found for site=%s', len(items), site_id)
+            if items:
+                logger.info('First item timestamp: %s', items[0].get('timestamp', 'N/A'))
+        
         return Response(_convert_decimals(resp.get('Items', [])))
     except Exception as exc:
         logger.error('DynamoDB forecast error site=%s: %s', site_id, exc)
@@ -2872,3 +2881,51 @@ def site_weather(request: Any, site_id: str) -> Response:
     except Exception as exc:
         logger.error('DynamoDB weather error site=%s: %s', site_id, exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_debug_data(request: Any, site_id: str) -> Response:
+    """
+    Debug endpoint to see what data types exist for a site in DynamoDB.
+    Returns sample timestamps and counts for each data type.
+    """
+    if not request.user.is_staff:
+        return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        table = _get_dynamo_table()
+        
+        # Query all items for the site (limited)
+        resp = table.query(
+            KeyConditionExpression=DynamoKey('site_id').eq(site_id),
+            Limit=100,
+        )
+        items = resp.get('Items', [])
+        
+        # Categorize by timestamp prefix
+        categories = {}
+        for item in items:
+            ts = item.get('timestamp', '')
+            if ts.startswith('FORECAST#'):
+                prefix = 'FORECAST'
+            elif ts.startswith('WEATHER_OBS#'):
+                prefix = 'WEATHER_OBS'
+            elif 'T' in ts:  # ISO timestamp for telemetry
+                prefix = 'TELEMETRY'
+            else:
+                prefix = 'OTHER'
+            
+            if prefix not in categories:
+                categories[prefix] = {'count': 0, 'samples': []}
+            categories[prefix]['count'] += 1
+            if len(categories[prefix]['samples']) < 3:
+                categories[prefix]['samples'].append(ts)
+        
+        return Response({
+            'site_id': site_id,
+            'total_items_sampled': len(items),
+            'categories': categories,
+        })
+    except Exception as exc:
+        logger.error('DynamoDB debug error site=%s: %s', site_id, exc)
+        return Response({'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

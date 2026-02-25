@@ -53,6 +53,7 @@ urlpatterns = [
 	path("sites/<str:site_id>/telemetry/", views.site_telemetry, name="site_telemetry"),
 	path("sites/<str:site_id>/forecast/", views.site_forecast, name="site_forecast"),
 	path("sites/<str:site_id>/weather/", views.site_weather, name="site_weather"),
+	path("sites/<str:site_id>/debug/", views.site_debug_data, name="site_debug_data"),
 	
 	# Profile management endpoints (for current logged-in user)
 	path("profile/", views.get_profile, name="get_profile"),

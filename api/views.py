@@ -2864,23 +2864,80 @@ def site_forecast(request: Any, site_id: str) -> Response:
 @permission_classes([IsAuthenticated])
 def site_weather(request: Any, site_id: str) -> Response:
     """
-    Return the latest WEATHER_OBS record for a site from DynamoDB.
+    Return weather data for a site from DynamoDB.
+
+    Response shape:
+      {
+        "current":         { obs_timestamp, ghi_wm2, temperature_c, humidity_pct,
+                             wind_speed_ms, cloud_cover_pct, fetched_at, source },
+        "hourly_forecast": [ { forecast_for, ghi_wm2, temperature_c, humidity_pct,
+                               wind_speed_ms, cloud_cover_pct, fetched_at }, ... ]
+      }
+
+    "current"  — latest WEATHER_OBS# record (what Open-Meteo currently reports).
+    "hourly_forecast" — up to 24 WEATHER_FCST# records for the next 24 h,
+      sorted chronologically, for rendering a weather outlook on the dashboard.
+    Both are written by the forecast-scheduler every 15 minutes.
     """
     if not _check_site_auth(request, site_id):
         return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
     try:
         table = _get_dynamo_table()
-        resp = table.query(
+
+        # 1. Latest current observation
+        obs_resp = table.query(
             KeyConditionExpression=DynamoKey('site_id').eq(site_id)
                 & DynamoKey('timestamp').begins_with('WEATHER_OBS#'),
             ScanIndexForward=False,
             Limit=1,
         )
-        items = _convert_decimals(resp.get('Items', []))
-        return Response(items[0] if items else None, status=status.HTTP_200_OK if items else status.HTTP_204_NO_CONTENT)
+        obs_items = _convert_decimals(obs_resp.get('Items', []))
+        current = None
+        if obs_items:
+            raw = obs_items[0]
+            current = {
+                'obs_timestamp':   raw.get('timestamp', '').replace('WEATHER_OBS#', ''),
+                'fetched_at':      raw.get('fetched_at', ''),
+                'ghi_wm2':         raw.get('ghi_wm2', 0),
+                'temperature_c':   raw.get('temperature_c', 0),
+                'humidity_pct':    raw.get('humidity_pct', 0),
+                'wind_speed_ms':   raw.get('wind_speed_ms', 0),
+                'cloud_cover_pct': raw.get('cloud_cover_pct', 0),
+                'source':          raw.get('source', 'open-meteo'),
+            }
+
+        # 2. Hourly weather forecast for the next 24 h
+        now_utc = datetime.now(dt_timezone.utc)
+        end_utc = now_utc + timedelta(hours=24)
+        fcst_resp = table.query(
+            KeyConditionExpression=DynamoKey('site_id').eq(site_id)
+                & DynamoKey('timestamp').between(
+                    f"WEATHER_FCST#{now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                    f"WEATHER_FCST#{end_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                ),
+            ScanIndexForward=True,
+        )
+        hourly_forecast = [
+            {
+                'forecast_for':    item.get('timestamp', '').replace('WEATHER_FCST#', ''),
+                'fetched_at':      item.get('fetched_at', ''),
+                'ghi_wm2':         item.get('ghi_wm2', 0),
+                'temperature_c':   item.get('temperature_c', 0),
+                'humidity_pct':    item.get('humidity_pct', 0),
+                'wind_speed_ms':   item.get('wind_speed_ms', 0),
+                'cloud_cover_pct': item.get('cloud_cover_pct', 0),
+            }
+            for item in _convert_decimals(fcst_resp.get('Items', []))
+        ]
+
+        if current is None and not hourly_forecast:
+            return Response(None, status=status.HTTP_204_NO_CONTENT)
+
+        return Response({'current': current, 'hourly_forecast': hourly_forecast})
+
     except Exception as exc:
         logger.error('DynamoDB weather error site=%s: %s', site_id, exc)
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(None, status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(['GET'])

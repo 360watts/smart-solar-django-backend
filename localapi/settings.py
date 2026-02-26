@@ -254,6 +254,7 @@ if USE_S3:
         # }
         # OR use signed URLs:
         AWS_QUERYSTRING_AUTH = True  # Generate signed URLs with expiration
+        AWS_PRESIGNED_URL_EXPIRATION = 604800  # 7 days (max allowed by AWS) for OTA firmware downloads over unreliable LTE
         
         # Use django-storages S3 backend
         DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

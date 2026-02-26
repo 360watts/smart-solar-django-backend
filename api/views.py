@@ -2986,3 +2986,106 @@ def site_debug_data(request: Any, site_id: str) -> Response:
     except Exception as exc:
         logger.error('DynamoDB debug error site=%s: %s', site_id, exc)
         return Response({'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_history_s3(request: Any, site_id: str) -> Response:
+    """
+    Return historical telemetry from S3 for a given date range.
+
+    S3 path layout (written by telemetry_writer Lambda per hour):
+        telemetry_csv/{site_id}/{YYYY}/{MM}/{DD}/{HH}/data.csv
+
+    Each CSV file has a header row and one data row per telemetry payload
+    received in that hour.  Multiple files are concatenated and returned
+    as a sorted JSON array — same shape as site_telemetry (DynamoDB).
+
+    Query params:
+      - start_date: ISO date/datetime string (required)
+      - end_date:   ISO date/datetime string (required)
+
+    Auth: staff may query any site; regular users only their own.
+    """
+    import csv as csv_mod
+    import io
+
+    if not _check_site_auth(request, site_id):
+        return Response({'error': 'Not authorised to view this site'}, status=status.HTTP_403_FORBIDDEN)
+
+    start_date = request.GET.get('start_date')
+    end_date   = request.GET.get('end_date')
+    if not start_date or not end_date:
+        return Response({'error': 'start_date and end_date are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        end_dt   = datetime.fromisoformat(end_date.replace('Z',   '+00:00'))
+    except (ValueError, TypeError):
+        return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ISO strings for timestamp range filtering (lexicographic comparison works for ISO format)
+    start_iso = start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+    end_iso   = end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+    s3 = boto3.client(
+        's3',
+        region_name=env_config('DYNAMODB_REGION', default='ap-south-1'),
+        aws_access_key_id=env_config('AWS_ACCESS_KEY_ID', default=''),
+        aws_secret_access_key=env_config('AWS_SECRET_ACCESS_KEY', default=''),
+    )
+    bucket = env_config('S3_BUCKET', default='360watts-datalake-pilot')
+
+    _NUMERIC_FIELDS = {
+        'run_state', 'pv1_power_w', 'pv2_power_w', 'pv1_voltage_v', 'pv1_current_a',
+        'pv2_voltage_v', 'pv2_current_a', 'ac_output_power_w', 'grid_power_w',
+        'grid_voltage_v', 'grid_frequency_hz', 'battery_voltage_v', 'battery_soc_percent',
+        'battery_current_a', 'battery_power_w', 'battery_temp_c', 'load_power_w',
+        'inverter_temp_c', 'pv_today_kwh', 'grid_buy_today_kwh', 'grid_sell_today_kwh',
+        'batt_charge_today_kwh', 'batt_discharge_today_kwh', 'load_today_kwh',
+    }
+
+    all_records: list = []
+    current = start_dt.date()
+    end_date_obj = end_dt.date()
+
+    while current <= end_date_obj:
+        # List all hourly CSV files for this day
+        day_prefix = f'telemetry_csv/{site_id}/{current.year}/{current.month:02d}/{current.day:02d}/'
+        try:
+            paginator = s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=bucket, Prefix=day_prefix):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if not key.endswith('.csv'):
+                        continue
+                    try:
+                        body = s3.get_object(Bucket=bucket, Key=key)['Body'].read().decode('utf-8')
+                        reader = csv_mod.DictReader(io.StringIO(body))
+                        for row in reader:
+                            ts = row.get('timestamp', '')
+                            # Lexicographic ISO comparison — filter to requested window
+                            if ts < start_iso or ts > end_iso:
+                                continue
+                            record: dict = {}
+                            for k, v in row.items():
+                                if v == '' or v is None:
+                                    record[k] = None
+                                elif k in _NUMERIC_FIELDS:
+                                    try:
+                                        record[k] = float(v)
+                                    except (ValueError, TypeError):
+                                        record[k] = v
+                                else:
+                                    record[k] = v
+                            all_records.append(record)
+                    except Exception as exc:
+                        logger.warning('S3 history: error reading key=%s: %s', key, exc)
+        except Exception as exc:
+            logger.warning('S3 history: error listing prefix=%s: %s', day_prefix, exc)
+
+        current += timedelta(days=1)
+
+    all_records.sort(key=lambda r: str(r.get('timestamp', '')))
+    logger.info('S3 history: site=%s start=%s end=%s → %d records', site_id, start_iso, end_iso, len(all_records))
+    return Response(all_records)

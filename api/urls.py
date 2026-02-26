@@ -54,6 +54,8 @@ urlpatterns = [
 	path("sites/<str:site_id>/forecast/", views.site_forecast, name="site_forecast"),
 	path("sites/<str:site_id>/weather/", views.site_weather, name="site_weather"),
 	path("sites/<str:site_id>/debug/", views.site_debug_data, name="site_debug_data"),
+	# S3 long-term history endpoint (telemetry older than DynamoDB 7-day TTL window)
+	path("sites/<str:site_id>/history/", views.site_history_s3, name="site_history_s3"),
 	
 	# Profile management endpoints (for current logged-in user)
 	path("profile/", views.get_profile, name="get_profile"),

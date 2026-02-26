@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.http import FileResponse, Http404
+from django.http import FileResponse, HttpResponse, Http404
 from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
@@ -194,7 +194,8 @@ def ota_check(request, device_id):
             except Exception:
                 is_s3 = False
 
-            if is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
+            use_presigned = getattr(settings, 'OTA_USE_PRESIGNED_URL', False)
+            if use_presigned and is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
                 # Configure S3 client with explicit config for regional endpoints
                 s3_config = Config(
                     signature_version='s3v4',
@@ -306,12 +307,71 @@ def ota_download(request, firmware_id):
             except:
                 pass
         
-        # Return file
-        response = FileResponse(firmware.file.open('rb'))
-        response['Content-Type'] = 'application/octet-stream'
-        response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
-        response['Content-Length'] = firmware.size
-        
+        # Return file — with Range request support for chunked OTA downloads
+        file_size = firmware.size
+        range_header = request.META.get('HTTP_RANGE', '').strip()
+
+        if range_header:
+            try:
+                range_spec = range_header.replace('bytes=', '')
+                range_start_str, range_end_str = range_spec.split('-')
+                range_start = int(range_start_str)
+                range_end = int(range_end_str) if range_end_str else file_size - 1
+                range_end = min(range_end, file_size - 1)
+                chunk_size = range_end - range_start + 1
+
+                # For S3-backed storage use boto3 GetObject with Range so only the
+                # requested bytes are transferred from S3 (not the whole file).
+                data = None
+                try:
+                    from storages.backends.s3boto3 import S3Boto3Storage
+                    if isinstance(firmware.file.storage, S3Boto3Storage):
+                        s3_client = boto3.client(
+                            's3',
+                            aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
+                            aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
+                            region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'us-east-1'),
+                        )
+                        file_name = firmware.file.name
+                        aws_location = getattr(settings, 'AWS_LOCATION', '')
+                        key = f"{aws_location}/{file_name}" if aws_location and not file_name.startswith(aws_location + '/') else file_name
+                        s3_resp = s3_client.get_object(
+                            Bucket=settings.AWS_STORAGE_BUCKET_NAME,
+                            Key=key,
+                            Range=f'bytes={range_start}-{range_end}',
+                        )
+                        data = s3_resp['Body'].read()
+                        logger.info(f"OTA Range [S3] - Firmware: {firmware.version}, bytes={range_start}-{range_end}/{file_size}")
+                except Exception as s3_err:
+                    logger.warning(f"S3 range read failed ({s3_err}), falling back to local seek")
+
+                if data is None:
+                    # Fallback for local/non-S3 storage
+                    f = firmware.file.open('rb')
+                    f.seek(range_start)
+                    data = f.read(chunk_size)
+                    f.close()
+                    logger.info(f"OTA Range [local] - Firmware: {firmware.version}, bytes={range_start}-{range_end}/{file_size}")
+
+                response = HttpResponse(data, status=206, content_type='application/octet-stream')
+                response['Content-Range'] = f'bytes {range_start}-{range_end}/{file_size}'
+                response['Content-Length'] = chunk_size
+                response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
+                response['Accept-Ranges'] = 'bytes'
+            except Exception as e:
+                logger.warning(f"OTA Range parse error ({range_header}): {e} — serving full file")
+                response = FileResponse(firmware.file.open('rb'))
+                response['Content-Type'] = 'application/octet-stream'
+                response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
+                response['Content-Length'] = file_size
+                response['Accept-Ranges'] = 'bytes'
+        else:
+            response = FileResponse(firmware.file.open('rb'))
+            response['Content-Type'] = 'application/octet-stream'
+            response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
+            response['Content-Length'] = file_size
+            response['Accept-Ranges'] = 'bytes'
+
         return response
         
     except Http404:

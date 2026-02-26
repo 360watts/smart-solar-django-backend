@@ -2919,13 +2919,16 @@ def site_weather(request: Any, site_id: str) -> Response:
         )
         hourly_forecast = [
             {
-                'forecast_for':    item.get('timestamp', '').replace('WEATHER_FCST#', ''),
-                'fetched_at':      item.get('fetched_at', ''),
-                'ghi_wm2':         item.get('ghi_wm2', 0),
-                'temperature_c':   item.get('temperature_c', 0),
-                'humidity_pct':    item.get('humidity_pct', 0),
-                'wind_speed_ms':   item.get('wind_speed_ms', 0),
-                'cloud_cover_pct': item.get('cloud_cover_pct', 0),
+                'forecast_for':          item.get('timestamp', '').replace('WEATHER_FCST#', ''),
+                'fetched_at':            item.get('fetched_at', ''),
+                'ghi_wm2':               item.get('ghi_wm2', 0),
+                'temperature_c':         item.get('temperature_c', 0),
+                'humidity_pct':          item.get('humidity_pct', 0),
+                'wind_speed_ms':         item.get('wind_speed_ms', 0),
+                'cloud_cover_pct':       item.get('cloud_cover_pct', 0),
+                'direct_radiation_wm2':  item.get('direct_radiation_wm2'),
+                'diffuse_radiation_wm2': item.get('diffuse_radiation_wm2'),
+                'precip_prob_pct':       item.get('precip_prob_pct'),
             }
             for item in _convert_decimals(fcst_resp.get('Items', []))
         ]

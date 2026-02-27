@@ -11,7 +11,7 @@
   "crons": [
     {
       "path": "/api/cron/replay-telemetry/",
-      "schedule": "*/0 * * * *"
+      "schedule": "0 3 * * *"
     },
     {
       "path": "/api/cron/purge-telemetry/",

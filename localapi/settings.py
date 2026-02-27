@@ -301,40 +301,6 @@ if not USE_S3 and not IS_VERCEL:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Logging configuration
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '[{levelname}] {asctime} {module}: {message}',
-            'style': '{',
-        },
-    },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
-        },
-    },
-    'root': {
-        'handlers': ['console'],
-        'level': 'INFO',
-    },
-    'loggers': {
-        'api': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'django.request': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-    },
-}
-
 # CORS settings for React frontend
 # PRODUCTION SETTINGS - Update these for your deployed frontend
 # SECURITY: CORS_ALLOW_ALL_ORIGINS removed - use explicit whitelist only
@@ -470,6 +436,23 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Health', 'description': 'System health and monitoring'},
     ],
 }
+
+# =============================================================================
+# DOMAIN CONSTANTS
+# =============================================================================
+
+# Seconds without a heartbeat before a device is considered offline
+DEVICE_HEARTBEAT_TIMEOUT_SECONDS = 300
+
+# Device JWT tokens older than this are rejected and require re-provisioning
+DEVICE_TOKEN_MAX_AGE_DAYS = 730
+
+# Minutes without a log update before an in-progress OTA is auto-failed
+OTA_UPDATE_TIMEOUT_MINUTES = 30
+
+# Telemetry alert thresholds (used in dynamic alert generation)
+ALERT_VOLTAGE_LOW_THRESHOLD = 10    # volts
+ALERT_TEMPERATURE_HIGH_THRESHOLD = 80  # °C
 
 # =============================================================================
 # LOGGING CONFIGURATION

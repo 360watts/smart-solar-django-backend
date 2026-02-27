@@ -10,24 +10,88 @@ from django.urls import reverse
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import models as db_models
+from datetime import timedelta
 import os
 import hashlib
 import logging
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from botocore.config import Config
 
 from api.models import Device
-from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig, DeviceTargetedFirmware
+from .models import FirmwareVersion, DeviceUpdateLog, OTAConfig, DeviceTargetedFirmware, TargetedUpdate
 from .serializers import (
     OTACheckSerializer,
     OTAResponseSerializer,
     DeviceUpdateLogSerializer,
     FirmwareVersionSerializer,
     OTAConfigSerializer,
+    TargetedUpdateSerializer,
+    DeviceTargetedFirmwareSerializer,
 )
 
 logger = logging.getLogger(__name__)
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
-from botocore.config import Config
+
+
+def _auto_fail_stale_logs(campaign):
+    """
+    Mark CHECKING / AVAILABLE / DOWNLOADING logs that haven't been updated
+    within OTA_UPDATE_TIMEOUT_MINUTES as FAILED and update campaign counters.
+    Returns the number of logs that were auto-failed.
+    """
+    timeout_minutes = getattr(settings, 'OTA_UPDATE_TIMEOUT_MINUTES', 30)
+    cutoff = timezone.now() - timedelta(minutes=timeout_minutes)
+
+    stale_qs = DeviceUpdateLog.objects.filter(
+        device__in=campaign.target_devices.all(),
+        firmware_version=campaign.target_firmware,
+        status__in=[
+            DeviceUpdateLog.Status.CHECKING,
+            DeviceUpdateLog.Status.AVAILABLE,
+            DeviceUpdateLog.Status.DOWNLOADING,
+        ],
+        last_checked_at__lt=cutoff,
+    )
+    stale_count = stale_qs.count()
+    if not stale_count:
+        return 0
+
+    now = timezone.now()
+    stale_qs.update(
+        status=DeviceUpdateLog.Status.FAILED,
+        error_message=(
+            f'Auto-failed: no activity for {timeout_minutes} minutes'
+        ),
+        completed_at=now,
+    )
+
+    # Also deactivate the device targets for stale devices so they stop
+    # receiving the update command on heartbeat.
+    stale_device_ids = list(
+        stale_qs.values_list('device_id', flat=True)
+    )
+    DeviceTargetedFirmware.objects.filter(
+        device_id__in=stale_device_ids,
+        targeted_update=campaign,
+        is_active=True,
+    ).update(is_active=False)
+
+    campaign.devices_failed = db_models.F('devices_failed') + stale_count
+    campaign.save(update_fields=['devices_failed'])
+    campaign.refresh_from_db(fields=['devices_failed', 'devices_updated', 'devices_total'])
+
+    # Transition campaign to FAILED if all devices have now settled
+    if (campaign.devices_updated + campaign.devices_failed) >= campaign.devices_total:
+        if campaign.devices_updated < campaign.devices_total:
+            campaign.status = TargetedUpdate.Status.FAILED
+            campaign.completed_at = now
+            campaign.save(update_fields=['status', 'completed_at'])
+
+    logger.warning(
+        'Auto-failed %d stale OTA log(s) for campaign %d (timeout=%dmin)',
+        stale_count, campaign.id, timeout_minutes,
+    )
+    return stale_count
 
 
 @api_view(['POST', 'GET'])
@@ -176,9 +240,11 @@ def ota_check(request, device_id):
                 'status': 0  # No update needed
             }, status=status.HTTP_200_OK)
         
-        # Update is available
+        # Update is available — record when the device first learned about it
         update_log.firmware_version = latest_firmware
         update_log.status = DeviceUpdateLog.Status.AVAILABLE
+        if not update_log.started_at:
+            update_log.started_at = timezone.now()
         update_log.save()
         
         # Build download URL.
@@ -746,14 +812,11 @@ def trigger_single_device_update(request):
         "notes": "Optional notes"
     }
     """
-    from .models import TargetedUpdate, DeviceTargetedFirmware
-    from .serializers import TargetedUpdateSerializer
-    
     try:
         device_serial = request.data.get('device_serial')
         firmware_id = request.data.get('firmware_id')
         notes = request.data.get('notes', '')
-        
+
         if not device_serial or not firmware_id:
             return Response(
                 {'error': 'device_serial and firmware_id are required'},
@@ -906,9 +969,6 @@ def trigger_multi_device_update(request):
         "notes": "Optional notes"
     }
     """
-    from .models import TargetedUpdate, DeviceTargetedFirmware
-    from .serializers import TargetedUpdateSerializer
-    
     try:
         device_serials = request.data.get('device_serials', [])
         firmware_id = request.data.get('firmware_id')
@@ -1022,9 +1082,6 @@ def trigger_version_based_update(request):
         "notes": "Optional notes"
     }
     """
-    from .models import TargetedUpdate, DeviceTargetedFirmware
-    from .serializers import TargetedUpdateSerializer
-    
     try:
         source_version = request.data.get('source_version')
         firmware_id = request.data.get('firmware_id')
@@ -1120,19 +1177,16 @@ def trigger_version_based_update(request):
 @permission_classes([IsAuthenticated])
 def list_targeted_updates(request):
     """List all targeted update campaigns"""
-    from .models import TargetedUpdate
-    from .serializers import TargetedUpdateSerializer
-    
     status_filter = request.query_params.get('status', None)
     update_type = request.query_params.get('type', None)
-    
+
     updates = TargetedUpdate.objects.all()
-    
+
     if status_filter:
         updates = updates.filter(status=status_filter)
     if update_type:
         updates = updates.filter(update_type=update_type)
-    
+
     serializer = TargetedUpdateSerializer(updates, many=True)
     return Response(serializer.data)
 
@@ -1140,32 +1194,23 @@ def list_targeted_updates(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_targeted_update(request, update_id):
-    """Get details of a targeted update campaign"""
-    from .models import TargetedUpdate
-    from .serializers import TargetedUpdateSerializer, DeviceTargetedFirmwareSerializer
-    
+    """Get details of a targeted update campaign, with per-device log status."""
     try:
         update = TargetedUpdate.objects.get(id=update_id)
+
+        # Auto-fail any stuck in-progress logs before returning status
+        if update.status == TargetedUpdate.Status.IN_PROGRESS:
+            _auto_fail_stale_logs(update)
+            update.refresh_from_db()
+
+        # TargetedUpdateSerializer already embeds enriched device_targets via
+        # get_device_targets(), so a single serializer call is enough.
         data = TargetedUpdateSerializer(update).data
-        
-        # Include list of targeted devices
-        data['target_devices'] = [
-            {
-                'device_serial': d.device_serial,
-                'has_updated': DeviceUpdateLog.objects.filter(
-                    device=d,
-                    firmware_version=update.target_firmware,
-                    status=DeviceUpdateLog.Status.COMPLETED
-                ).exists()
-            }
-            for d in update.target_devices.all()
-        ]
-        
         return Response(data)
     except TargetedUpdate.DoesNotExist:
         return Response(
             {'error': 'Targeted update not found'},
-            status=status.HTTP_404_NOT_FOUND
+            status=status.HTTP_404_NOT_FOUND,
         )
 
 
@@ -1173,8 +1218,6 @@ def get_targeted_update(request, update_id):
 @permission_classes([IsAdminUser])
 def cancel_targeted_update(request, update_id):
     """Cancel a targeted update campaign"""
-    from .models import TargetedUpdate, DeviceTargetedFirmware
-    
     try:
         update = TargetedUpdate.objects.get(id=update_id)
         
@@ -1210,7 +1253,7 @@ def get_device_firmware_versions(request):
     versions = DeviceUpdateLog.objects.values('current_firmware').annotate(
         device_count=db_models.Count('device', distinct=True)
     ).order_by('-device_count')
-    
+
     return Response([
         {
             'version': v['current_firmware'],
@@ -1218,3 +1261,107 @@ def get_device_firmware_versions(request):
         }
         for v in versions
     ])
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def ota_status(request, device_id):
+    """
+    Device reports the result of an OTA update attempt.
+
+    Called by the device after it has finished applying (or failing) the
+    firmware update so the backend can immediately reflect the true state
+    without waiting for the next ota_check.
+
+    Request body:
+    {
+        "firmware_version": "0x00020000",   # version now running (success) or attempted (fail)
+        "status": "completed" | "failed",
+        "error": "optional human-readable error message"
+    }
+    """
+    try:
+        device = Device.objects.filter(device_serial=device_id).first()
+        if not device:
+            return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        reported_version = request.data.get('firmware_version', '')
+        reported_status = request.data.get('status', '').lower()
+        error_msg = request.data.get('error', '')
+
+        if reported_status not in ('completed', 'failed'):
+            return Response(
+                {'error': "status must be 'completed' or 'failed'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Find the most recent in-flight log for this device
+        log = DeviceUpdateLog.objects.filter(
+            device=device,
+            status__in=[
+                DeviceUpdateLog.Status.DOWNLOADING,
+                DeviceUpdateLog.Status.AVAILABLE,
+                DeviceUpdateLog.Status.CHECKING,
+            ],
+        ).order_by('-last_checked_at').first()
+
+        if not log:
+            return Response(
+                {'message': 'No active update found for device', 'device_id': device_id},
+                status=status.HTTP_200_OK,
+            )
+
+        now = timezone.now()
+        log.last_checked_at = now
+        log.completed_at = now
+
+        # Resolve the active device target (if any) once, used in both branches
+        device_target = DeviceTargetedFirmware.objects.filter(
+            device=device, is_active=True
+        ).select_related('targeted_update').first()
+
+        if reported_status == 'completed':
+            log.status = DeviceUpdateLog.Status.COMPLETED
+            log.current_firmware = reported_version
+            log.save(update_fields=['status', 'current_firmware', 'last_checked_at', 'completed_at'])
+            logger.info('Device %s reported OTA success: %s', device_id, reported_version)
+
+            if device_target:
+                device_target.is_active = False
+                device_target.save(update_fields=['is_active'])
+
+                campaign = device_target.targeted_update
+                if campaign:
+                    campaign.devices_updated += 1
+                    if campaign.devices_updated >= campaign.devices_total:
+                        campaign.status = TargetedUpdate.Status.COMPLETED
+                        campaign.completed_at = now
+                    campaign.save(update_fields=['devices_updated', 'status', 'completed_at'])
+
+        else:  # failed
+            log.status = DeviceUpdateLog.Status.FAILED
+            log.error_message = error_msg or 'Device reported update failure'
+            log.save(update_fields=['status', 'error_message', 'last_checked_at', 'completed_at'])
+            logger.warning('Device %s reported OTA failure: %s', device_id, error_msg)
+
+            if device_target:
+                device_target.is_active = False
+                device_target.save(update_fields=['is_active'])
+
+                campaign = device_target.targeted_update
+                if campaign:
+                    campaign.devices_failed += 1
+                    settled = campaign.devices_updated + campaign.devices_failed
+                    if settled >= campaign.devices_total:
+                        if campaign.devices_updated < campaign.devices_total:
+                            campaign.status = TargetedUpdate.Status.FAILED
+                        else:
+                            campaign.status = TargetedUpdate.Status.COMPLETED
+                        campaign.completed_at = now
+                    campaign.save(update_fields=['devices_failed', 'status', 'completed_at'])
+
+        return Response({'message': f'OTA status {reported_status} recorded', 'device_id': device_id})
+
+    except Exception as e:
+        logger.error('OTA Status Error - Device: %s, Error: %s', device_id, str(e))
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

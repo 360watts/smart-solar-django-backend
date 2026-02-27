@@ -23,12 +23,19 @@ from .serializers import (
     TelemetryDataSerializer,
     DeviceSerializer,
 )
-from .models import Device, TelemetryData, GatewayConfig, UserProfile, SlaveDevice, RegisterMapping, DeviceLog
+from .models import (
+    Device, TelemetryData, GatewayConfig, UserProfile,
+    SlaveDevice, RegisterMapping, DeviceLog, Alert, SolarSite,
+)
+from .serializers import AlertSerializer, SolarSiteSerializer
 from ota.models import DeviceTargetedFirmware
 import logging
 import jwt
 import secrets
 import traceback
+import boto3
+from boto3.dynamodb.conditions import Key as DynamoKey
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 # Get JWT secret from environment variable with secure fallback
@@ -155,18 +162,14 @@ class DeviceAuthentication:
             iat = payload.get('iat')
             if iat:
                 token_age_days = (datetime.now().timestamp() - iat) / 86400
-                if token_age_days > 730:  # 2 years
+                max_age = getattr(settings, 'DEVICE_TOKEN_MAX_AGE_DAYS', 730)
+                if token_age_days > max_age:
                     logger.warning(f"Device auth failed: Token too old ({token_age_days:.0f} days). Device: {token_device_id}")
                     return False, 'Device token is too old, please re-provision'
             
             # Check if device exists and get its status
             try:
                 device = Device.objects.get(device_serial=token_device_id)
-                
-                # Future enhancement: Check if device is disabled/blocked
-                # if hasattr(device, 'is_active') and not device.is_active:
-                #     logger.warning(f"Device auth failed: Device disabled. Device: {token_device_id}")
-                #     return False, f'Device {token_device_id} has been disabled'
                 
             except Device.DoesNotExist:
                 logger.warning(f"Device auth failed: Device not found. Device: {token_device_id}, IP: {request.META.get('REMOTE_ADDR')}")
@@ -198,7 +201,7 @@ def provision(request: Any) -> Response:
     ESP32 expects: {"status": "success", "deviceId": "...", "provisionedAt": "...", "credentials": {...}}
     Rate limited: 10 provisions per minute per IP
     """
-    logger.info(f"Provision request: {request.data}")
+    logger.debug(f"Provision request: {request.data}")
     
     serializer = ProvisionSerializer(data=request.data)
     if not serializer.is_valid():
@@ -315,7 +318,7 @@ def gateway_config(request: Any, device_id: str) -> Response:
             logger.warning(f"Config request failed authentication from {device_id}: {result}")
             return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
 
-        logger.info(f"Config request from {device_id}: {request.data}")
+        logger.debug(f"Config request from {device_id}: {request.data}")
 
         # Verify device exists
         device, _ = Device.objects.get_or_create(device_serial=device_id)
@@ -347,7 +350,7 @@ def gateway_config(request: Any, device_id: str) -> Response:
 
         # Serialize and return (config_version already set via admin/app)
         data = GatewayConfigSerializer(config).data
-        logger.info(f"Sending config {config.config_id} to device {device_id}")
+        logger.debug(f"Sending config {config.config_id} to device {device_id}")
 
         # Clear the pending_config_update flag — device has received the latest config
         # Also record the download timestamp
@@ -415,7 +418,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
     
     # Log only sanitized, non-sensitive data (exclude JWT secret)
     sanitized_data = {k: v for k, v in request.data.items() if k != 'secret'}
-    logger.info(f"Heartbeat from {device_id}: {sanitized_data}")
+    logger.debug(f"Heartbeat from {device_id}: {sanitized_data}")
     
     # Get device
     device, _ = Device.objects.get_or_create(device_serial=device_id)
@@ -435,19 +438,19 @@ def heartbeat(request: Any, device_id: str) -> Response:
         # Layer 1: config ID mismatch (different preset assigned)
         if current_config_id != device.config_version:
             update_config_needed = 1
-            logger.info(f"Config update needed: device has '{current_config_id}', assigned is '{device.config_version}'")
+            logger.debug(f"Config update needed: device has '{current_config_id}', assigned is '{device.config_version}'")
         else:
             # Layer 2a: explicit flag — set whenever preset or slave content changes
             if device.pending_config_update:
                 update_config_needed = 1
-                logger.info(f"Config update needed: pending_config_update flag set for device {device_id}")
+                logger.debug(f"Config update needed: pending_config_update flag set for device {device_id}")
             else:
                 # Layer 2b: cfgVer safety net — catches any missed flag resets
                 try:
                     assigned_config = GatewayConfig.objects.get(config_id=device.config_version)
                     if device.config_ack_ver is None or assigned_config.version != device.config_ack_ver:
                         update_config_needed = 1
-                        logger.info(
+                        logger.debug(
                             f"Config update needed (cfgVer mismatch): config '{device.config_version}' "
                             f"version={assigned_config.version}, acked={device.config_ack_ver}"
                         )
@@ -457,7 +460,7 @@ def heartbeat(request: Any, device_id: str) -> Response:
         # No config assigned yet
         if current_config_id:
             update_config_needed = 1
-            logger.info(f"Config update needed: device has '{current_config_id}' but no config assigned on backend")
+            logger.debug(f"Config update needed: device has '{current_config_id}' but no config assigned on backend")
     
     # Check for pending reboot command
     reboot_needed = 1 if device.pending_reboot else 0
@@ -526,7 +529,7 @@ def logs(request: Any, device_id: str) -> Response:
     Accepts both JSON format {"logs": [...]} and plain text log messages
     Requires device JWT authentication
     """
-    logger.info(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}, Data type: {type(request.data)}")
+    logger.debug(f"Logs endpoint hit from {device_id}, Content-Type: {request.content_type}, Data type: {type(request.data)}")
     
     # Authenticate device
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
@@ -543,7 +546,7 @@ def logs(request: Any, device_id: str) -> Response:
     # Extract log data from request - handle both JSON and plain text
     logs_data = []
     try:
-        logger.info(f"Request data from {device_id}: {request.data}")
+        logger.debug(f"Request data from {device_id}: {request.data}")
         
         # Check if request.data is a string (from PlainTextParser)
         if isinstance(request.data, str):
@@ -586,7 +589,7 @@ def logs(request: Any, device_id: str) -> Response:
                     'metadata': {}
                 }]
         
-        logger.info(f"Parsed {len(logs_data)} log entries from {device_id}")
+        logger.debug(f"Parsed {len(logs_data)} log entries from {device_id}")
     except Exception as e:
         logger.error(f"Failed to parse logs data from {device_id}: {e}, traceback: {traceback.format_exc()}")
         # Even on parse error, try to save the raw body as a log
@@ -598,7 +601,7 @@ def logs(request: Any, device_id: str) -> Response:
                     'message': f"Parse error - raw content: {body_text[:500]}",
                     'metadata': {'parse_error': str(e)}
                 }]
-        except:
+        except (UnicodeDecodeError, AttributeError):
             return Response({"error": f"Invalid log data format: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
     
     # Save logs to database
@@ -790,18 +793,19 @@ def alerts_list(request: Any) -> Response:
     recent_telemetry = TelemetryData.objects.select_related('device').filter(timestamp__gte=timezone.now() - timedelta(hours=1))
     
     # Get all devices at once to avoid N+1 queries
-    devices = Device.objects.all()
-    
-    # Build a map of device to latest telemetry "
+    devices = Device.objects.select_related('user').all()
+    heartbeat_timeout = getattr(settings, 'DEVICE_HEARTBEAT_TIMEOUT_SECONDS', 300)
+
+    # Build a map of device to latest telemetry
     device_latest_telemetry = {}
     for telemetry in recent_telemetry.order_by('-timestamp'):
         if telemetry.device_id not in device_latest_telemetry:
             device_latest_telemetry[telemetry.device_id] = telemetry
-    
+
     # Check for offline devices
     for device in devices:
         last_heartbeat = device_latest_telemetry.get(device.id)
-        if not last_heartbeat or (timezone.now() - last_heartbeat.timestamp).total_seconds() > 300:  # 5 minutes
+        if not last_heartbeat or (timezone.now() - last_heartbeat.timestamp).total_seconds() > heartbeat_timeout:
             alerts.append({
                 "id": f"device_offline_{device.device_serial}",
                 "type": "device_offline",
@@ -2392,12 +2396,14 @@ def add_slaves_to_preset(request, config_id):
     if not isinstance(slave_ids, list):
         return Response({'error': 'slave_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
 
-    slaves = SlaveDevice.objects.filter(id__in=slave_ids)
-    updated = []
+    slaves = list(SlaveDevice.objects.filter(id__in=slave_ids).prefetch_related('registers'))
     for slave in slaves:
         slave.gateway_config = config
-        slave.save()
-        updated.append({
+    if slaves:
+        SlaveDevice.objects.bulk_update(slaves, ['gateway_config'])
+
+    updated = [
+        {
             'id': slave.id,
             'slave_id': slave.slave_id,
             'device_name': slave.device_name,
@@ -2408,7 +2414,9 @@ def add_slaves_to_preset(request, config_id):
             'registers': [_register_to_dict(reg) for reg in slave.registers.all()],
             'config_id': config.config_id,
             'config_name': config.name if hasattr(config, 'name') else None,
-        })
+        }
+        for slave in slaves
+    ]
     
     # Update parent GatewayConfig version and flag all devices using this config
     if updated:
@@ -2459,9 +2467,6 @@ def health_check(request: Any) -> Response:
 
 
 # ============== Alert CRUD Endpoints ==============
-
-from .models import Alert
-from .serializers import AlertSerializer
 
 
 @api_view(['GET', 'POST'])
@@ -2568,8 +2573,6 @@ def alert_resolve(request: Any, alert_id: int) -> Response:
 
 
 # ─── Solar Site endpoints ────────────────────────────────────────────────────
-from .models import SolarSite
-from .serializers import SolarSiteSerializer
 
 
 @api_view(['GET', 'POST'])
@@ -2660,11 +2663,7 @@ def device_site(request: Any, device_id: int) -> Response:
             }
             return Response(data)
         except Exception as e:
-            # Log error and return a proper error response
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"Error fetching site for device {device_id}: {str(e)}")
-            print(error_details)
+            logger.error(f"Error fetching site for device {device_id}: {str(e)}", exc_info=True)
             return Response(
                 {'error': 'Failed to retrieve site', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -2699,9 +2698,6 @@ def device_site_update(request: Any, device_id: int) -> Response:
 
 
 # ─── DynamoDB Site Data endpoints ────────────────────────────────────────────
-import boto3
-from boto3.dynamodb.conditions import Key as DynamoKey
-from decimal import Decimal
 
 
 def _get_dynamo_table():
@@ -2760,20 +2756,20 @@ def site_telemetry(request: Any, site_id: str) -> Response:
         if end_date:
             try:
                 end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            except:
+            except (ValueError, TypeError):
                 end_dt = now_utc
         else:
             end_dt = now_utc
-            
+
         if start_date:
             try:
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            except:
+            except (ValueError, TypeError):
                 start_dt = end_dt - timedelta(hours=24)
         elif days:
             try:
                 start_dt = end_dt - timedelta(days=int(days))
-            except:
+            except (ValueError, TypeError):
                 start_dt = end_dt - timedelta(hours=24)
         else:
             start_dt = end_dt - timedelta(hours=24)
@@ -2822,8 +2818,8 @@ def site_forecast(request: Any, site_id: str) -> Response:
                         & DynamoKey('timestamp').between(start_str, end_str),
                     ScanIndexForward=True,
                 )
-            except:
-                # Fallback to today
+            except (ValueError, TypeError, Exception) as exc:
+                logger.warning('Forecast range query failed (%s), falling back to today', exc)
                 today = datetime.utcnow().strftime('%Y-%m-%d')
                 resp = table.query(
                     KeyConditionExpression=DynamoKey('site_id').eq(site_id)
@@ -2835,13 +2831,13 @@ def site_forecast(request: Any, site_id: str) -> Response:
             if date_param:
                 try:
                     target_date = datetime.fromisoformat(date_param.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-                except:
+                except (ValueError, TypeError):
                     target_date = datetime.utcnow().strftime('%Y-%m-%d')
             else:
                 target_date = datetime.utcnow().strftime('%Y-%m-%d')
             
             query_prefix = f'FORECAST#{target_date}'
-            logger.info('DynamoDB forecast query: site_id=%s, timestamp begins_with=%s', site_id, query_prefix)
+            logger.debug('DynamoDB forecast query: site_id=%s, timestamp begins_with=%s', site_id, query_prefix)
                 
             resp = table.query(
                 KeyConditionExpression=DynamoKey('site_id').eq(site_id)
@@ -2850,9 +2846,9 @@ def site_forecast(request: Any, site_id: str) -> Response:
             )
             
             items = resp.get('Items', [])
-            logger.info('DynamoDB forecast result: %d items found for site=%s', len(items), site_id)
+            logger.debug('DynamoDB forecast result: %d items found for site=%s', len(items), site_id)
             if items:
-                logger.info('First item timestamp: %s', items[0].get('timestamp', 'N/A'))
+                logger.debug('First item timestamp: %s', items[0].get('timestamp', 'N/A'))
         
         return Response(_convert_decimals(resp.get('Items', [])))
     except Exception as exc:
@@ -3090,5 +3086,5 @@ def site_history_s3(request: Any, site_id: str) -> Response:
         current += timedelta(days=1)
 
     all_records.sort(key=lambda r: str(r.get('timestamp', '')))
-    logger.info('S3 history: site=%s start=%s end=%s → %d records', site_id, start_iso, end_iso, len(all_records))
+    logger.debug('S3 history: site=%s start=%s end=%s → %d records', site_id, start_iso, end_iso, len(all_records))
     return Response(all_records)

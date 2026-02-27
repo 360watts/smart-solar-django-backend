@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
+from django.conf import settings
 
 
 class UserProfile(models.Model):
@@ -45,15 +46,22 @@ class Device(models.Model):
 	updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices_updated')
 	updated_at = models.DateTimeField(auto_now=True)
 
+	class Meta:
+		indexes = [
+			models.Index(fields=['user']),
+			models.Index(fields=['config_version']),
+			models.Index(fields=['last_heartbeat']),
+		]
+
 	def __str__(self):
 		return self.device_serial
-	
+
 	def is_online(self):
-		"""Check if device is online based on last heartbeat (within 5 minutes)"""
+		"""Check if device is online based on last heartbeat."""
 		if not self.last_heartbeat:
 			return False
-		from django.utils import timezone
-		return (timezone.now() - self.last_heartbeat).total_seconds() < 300
+		timeout = getattr(settings, 'DEVICE_HEARTBEAT_TIMEOUT_SECONDS', 300)
+		return (timezone.now() - self.last_heartbeat).total_seconds() < timeout
 
 
 class GatewayConfig(models.Model):

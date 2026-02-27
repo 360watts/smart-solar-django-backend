@@ -4,6 +4,9 @@ from . import views
 urlpatterns = [
     # OTA device check endpoint (main endpoint for STM32)
     path('devices/<str:device_id>/check', views.ota_check, name='ota_check'),
+
+    # Device reports OTA result (success or failure) after applying the update
+    path('devices/<str:device_id>/status', views.ota_status, name='ota_status'),
     
     # Firmware download
     path('firmware/<int:firmware_id>/download', views.ota_download, name='ota_download'),

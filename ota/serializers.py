@@ -91,20 +91,41 @@ class TargetedUpdateSerializer(serializers.ModelSerializer):
     target_firmware = FirmwareVersionSerializer(read_only=True)
     
     def get_device_targets(self, obj):
-        """Return list of device targets with their status"""
+        """Return list of device targets with their latest update log status."""
         from .models import DeviceTargetedFirmware
-        targets = DeviceTargetedFirmware.objects.filter(
-            targeted_update=obj
-        ).select_related('device', 'target_firmware')
-        
+        targets = list(
+            DeviceTargetedFirmware.objects.filter(
+                targeted_update=obj
+            ).select_related('device', 'target_firmware')
+        )
+
+        # Fetch all relevant logs in one query and build a dict keyed by device_id
+        device_ids = [t.device_id for t in targets]
+        logs = DeviceUpdateLog.objects.filter(
+            device_id__in=device_ids,
+            firmware_version=obj.target_firmware,
+        ).order_by('-last_checked_at')
+
+        log_map: dict = {}
+        for log in logs:
+            # keep only the most recent log per device (queryset is ordered newest-first)
+            if log.device_id not in log_map:
+                log_map[log.device_id] = log
+
         return [{
             'id': t.id,
             'device': {
                 'device_serial': t.device.device_serial,
-                'id': t.device.id
+                'id': t.device.id,
             },
             'is_active': t.is_active,
             'created_at': t.created_at,
+            # Live status fields from the latest DeviceUpdateLog
+            'log_status': log_map[t.device_id].status if t.device_id in log_map else None,
+            'log_error': log_map[t.device_id].error_message if t.device_id in log_map else None,
+            'log_last_checked_at': log_map[t.device_id].last_checked_at if t.device_id in log_map else None,
+            'log_bytes_downloaded': log_map[t.device_id].bytes_downloaded if t.device_id in log_map else 0,
+            'log_attempt_count': log_map[t.device_id].attempt_count if t.device_id in log_map else 0,
         } for t in targets]
     
     class Meta:

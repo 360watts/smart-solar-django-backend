@@ -181,63 +181,72 @@ def ota_check(request, device_id):
         update_log.status = DeviceUpdateLog.Status.AVAILABLE
         update_log.save()
         
-        # Build download URL. Prefer returning a presigned S3 URL when S3 is configured
+        # Build download URL.
+        # Priority: 1) CloudFront (short URL, modem-friendly)
+        #           2) S3 presigned (if OTA_USE_PRESIGNED_URL=True)
+        #           3) Django proxy fallback (default)
         download_url = None
         url_type = 'direct'
         url_ttl = None
 
         try:
-            # Detect django-storages S3 backend
-            try:
-                from storages.backends.s3boto3 import S3Boto3Storage
-                is_s3 = isinstance(latest_firmware.file.storage, S3Boto3Storage)
-            except Exception:
-                is_s3 = False
-
-            use_presigned = getattr(settings, 'OTA_USE_PRESIGNED_URL', False)
-            if use_presigned and is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
-                # Configure S3 client with explicit config for regional endpoints
-                s3_config = Config(
-                    signature_version='s3v4',
-                    s3={'addressing_style': 'path'}  # Use path-style URLs: s3.region.amazonaws.com/bucket/key
-                )
-                
-                s3_client = boto3.client(
-                    's3',
-                    aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
-                    aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
-                    region_name=getattr(settings, 'AWS_S3_REGION_NAME', None),
-                    endpoint_url=getattr(settings, 'AWS_S3_ENDPOINT_URL', None) or None,
-                    config=s3_config
-                )
-                # Build full S3 key with AWS_LOCATION prefix if needed
+            # --- 1. CloudFront ---
+            cf_domain = getattr(settings, 'OTA_CLOUDFRONT_DOMAIN', '')
+            if cf_domain:
                 file_name = latest_firmware.file.name
                 aws_location = getattr(settings, 'AWS_LOCATION', '')
-                
-                # If file_name doesn't already include the location prefix, add it
                 if aws_location and not file_name.startswith(aws_location + '/'):
-                    key = f"{aws_location}/{file_name}"
+                    cf_key = f"{aws_location}/{file_name}"
                 else:
-                    key = file_name
-                
-                expires = getattr(settings, 'AWS_PRESIGNED_URL_EXPIRATION', 300)
-                logger.debug(f"Generating presigned URL - Bucket: {settings.AWS_STORAGE_BUCKET_NAME}, Key: {key}")
+                    cf_key = file_name
+                download_url = f"https://{cf_domain}/{cf_key}"
+                url_type = 'cloudfront'
+                logger.info(f"CloudFront URL for firmware {latest_firmware.version}: {download_url}")
+
+            # --- 2. S3 presigned (fallback when CF not configured) ---
+            if not download_url:
                 try:
-                    presigned = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': key},
-                        ExpiresIn=int(expires),
+                    from storages.backends.s3boto3 import S3Boto3Storage
+                    is_s3 = isinstance(latest_firmware.file.storage, S3Boto3Storage)
+                except Exception:
+                    is_s3 = False
+
+                use_presigned = getattr(settings, 'OTA_USE_PRESIGNED_URL', False)
+                if use_presigned and is_s3 and getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None):
+                    s3_config = Config(
+                        signature_version='s3v4',
+                        s3={'addressing_style': 'path'}
                     )
-                    download_url = presigned
-                    url_type = 's3_presigned'
-                    url_ttl = int(expires)
-                    logger.info(f"Generated presigned URL for firmware {latest_firmware.version}: {presigned}")
-                except (BotoCoreError, ClientError) as e:
-                    logger.warning(f"Presigned URL generation failed, falling back to proxy download: {e}")
+                    s3_client = boto3.client(
+                        's3',
+                        aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
+                        aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
+                        region_name=getattr(settings, 'AWS_S3_REGION_NAME', None),
+                        endpoint_url=getattr(settings, 'AWS_S3_ENDPOINT_URL', None) or None,
+                        config=s3_config
+                    )
+                    file_name = latest_firmware.file.name
+                    aws_location = getattr(settings, 'AWS_LOCATION', '')
+                    key = f"{aws_location}/{file_name}" if aws_location and not file_name.startswith(aws_location + '/') else file_name
+
+                    expires = getattr(settings, 'AWS_PRESIGNED_URL_EXPIRATION', 300)
+                    try:
+                        presigned = s3_client.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': key},
+                            ExpiresIn=int(expires),
+                        )
+                        download_url = presigned
+                        url_type = 's3_presigned'
+                        url_ttl = int(expires)
+                        logger.info(f"Generated presigned URL for firmware {latest_firmware.version}: {presigned}")
+                    except (BotoCoreError, ClientError) as e:
+                        logger.warning(f"Presigned URL generation failed, falling back to proxy download: {e}")
 
         except Exception as e:
-            logger.debug(f"Presigned URL flow skipped or failed: {e}")
+            logger.debug(f"URL generation skipped or failed: {e}")
 
+        # --- 3. Django proxy (always available as final fallback) ---
         if not download_url:
             download_url = request.build_absolute_uri(
                 reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})

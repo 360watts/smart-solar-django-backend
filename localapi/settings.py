@@ -260,6 +260,12 @@ if USE_S3:
         # Set to False (default) to proxy firmware through the Django /ota/firmware/<id>/download/ endpoint.
         # Use False for cellular modems (Cavli etc.) whose AT HTTP stacks mangle long presigned query strings.
         OTA_USE_PRESIGNED_URL = False
+
+        # CloudFront CDN for OTA firmware delivery (optional but recommended).
+        # When set, ota_check returns a short clean CF URL instead of presigned/proxy.
+        # Short URL = no query strings = works with Cavli modem AT HTTP stack.
+        # Distribution: E1CGR1I70J5VH2  (PriceClass_200, ap-south-1 origin)
+        OTA_CLOUDFRONT_DOMAIN = config('OTA_CLOUDFRONT_DOMAIN')
         
         # Use django-storages S3 backend
         DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

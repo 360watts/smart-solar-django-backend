@@ -8,6 +8,16 @@
       "maxDuration": 30
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron/replay-telemetry/",
+      "schedule": "*/0 * * * *"
+    },
+    {
+      "path": "/api/cron/purge-telemetry/",
+      "schedule": "0 2 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

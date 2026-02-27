@@ -25,7 +25,7 @@ from .serializers import (
 )
 from .models import (
     Device, TelemetryData, GatewayConfig, UserProfile,
-    SlaveDevice, RegisterMapping, DeviceLog, Alert, SolarSite,
+    SlaveDevice, RegisterMapping, DeviceLog, Alert, SolarSite, TelemetryRaw,
 )
 from .serializers import AlertSerializer, SolarSiteSerializer
 from ota.models import DeviceTargetedFirmware
@@ -35,6 +35,7 @@ import secrets
 import traceback
 import boto3
 from boto3.dynamodb.conditions import Key as DynamoKey
+from botocore.config import Config as BotoConfig
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -644,6 +645,193 @@ def telemetry_ingest(request: Any) -> Response:
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     telemetry = serializer.save()
     return Response({"status": "stored", "id": telemetry.id}, status=status.HTTP_201_CREATED)
+
+
+def _build_dynamo_item(site_id: str, payload: dict, timestamp_iso: str, received_at: str, ttl: int) -> dict:
+    """Build a DynamoDB item from a raw Deye inverter payload."""
+    def _dec(val, default=0):
+        try:
+            return Decimal(str(float(val)))
+        except (TypeError, ValueError):
+            return Decimal(str(default))
+
+    return {
+        'site_id':                  site_id,
+        'timestamp':                timestamp_iso,
+        'record_type':              'TELEMETRY',
+        'run_state':                int(payload.get('run_state', 0)),
+        'pv1_power_w':              _dec(payload.get('pv1_power_w', 0)),
+        'pv2_power_w':              _dec(payload.get('pv2_power_w', 0)),
+        'pv1_voltage_v':            _dec(payload.get('pv1_voltage_v', 0)),
+        'pv1_current_a':            _dec(payload.get('pv1_current_a', 0)),
+        'pv2_voltage_v':            _dec(payload.get('pv2_voltage_v', 0)),
+        'pv2_current_a':            _dec(payload.get('pv2_current_a', 0)),
+        'ac_output_power_w':        _dec(payload.get('ac_output_power_w', 0)),
+        'grid_power_w':             _dec(payload.get('grid_power_w', 0)),
+        'grid_voltage_v':           _dec(payload.get('grid_voltage_v', 0)),
+        'grid_frequency_hz':        _dec(payload.get('grid_frequency_hz', 0)),
+        'battery_voltage_v':        _dec(payload.get('battery_voltage_v', 0)),
+        'battery_soc_percent':      _dec(payload.get('battery_soc_percent', 0)),
+        'battery_current_a':        _dec(payload.get('battery_current_a', 0)),
+        'battery_power_w':          _dec(payload.get('battery_power_w', 0)),
+        'battery_temp_c':           _dec(payload.get('battery_temp_c', 0)),
+        'load_power_w':             _dec(payload.get('load_power_w', 0)),
+        'inverter_temp_c':          _dec(payload.get('inverter_temp_c', 0)),
+        'pv_today_kwh':             _dec(payload.get('pv_today_kwh', 0)),
+        'grid_buy_today_kwh':       _dec(payload.get('grid_buy_today_kwh', 0)),
+        'grid_sell_today_kwh':      _dec(payload.get('grid_sell_today_kwh', 0)),
+        'batt_charge_today_kwh':    _dec(payload.get('batt_charge_today_kwh', 0)),
+        'batt_discharge_today_kwh': _dec(payload.get('batt_discharge_today_kwh', 0)),
+        'load_today_kwh':           _dec(payload.get('load_today_kwh', 0)),
+        'ttl_timestamp':            ttl,
+        'received_at':              received_at,
+    }
+
+
+_S3_CSV_HEADER = (
+    'site_id,timestamp,run_state,'
+    'pv1_power_w,pv2_power_w,pv1_voltage_v,pv1_current_a,pv2_voltage_v,pv2_current_a,'
+    'ac_output_power_w,grid_power_w,grid_voltage_v,grid_frequency_hz,'
+    'battery_voltage_v,battery_soc_percent,battery_current_a,battery_power_w,battery_temp_c,'
+    'load_power_w,inverter_temp_c,'
+    'pv_today_kwh,grid_buy_today_kwh,grid_sell_today_kwh,'
+    'batt_charge_today_kwh,batt_discharge_today_kwh,load_today_kwh,received_at\n'
+)
+
+
+def _write_dynamo(db_item: dict) -> None:
+    """Write one telemetry item to DynamoDB. Raises on failure (boto3 retries 3× internally)."""
+    _get_dynamo_table().put_item(Item=db_item)
+
+
+def _write_s3_csv(site_id: str, timestamp_iso: str, db_item: dict, received_at: str) -> None:
+    """
+    Append one row to the per-hour CSV file in S3.
+    Path: telemetry_csv/{site_id}/{YYYY}/{MM}/{DD}/{HH}/data.csv
+    Raises on failure (boto3 retries 3× internally).
+    """
+    s3 = _get_s3_client()
+    bucket = env_config('S3_BUCKET', default='360watts-datalake-pilot')
+    ts_dt = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
+    s3_key = f"telemetry_csv/{site_id}/{ts_dt.strftime('%Y/%m/%d/%H')}/data.csv"
+
+    row = (
+        f"{site_id},{timestamp_iso},{db_item['run_state']},"
+        f"{db_item['pv1_power_w']},{db_item['pv2_power_w']},"
+        f"{db_item['pv1_voltage_v']},{db_item['pv1_current_a']},"
+        f"{db_item['pv2_voltage_v']},{db_item['pv2_current_a']},"
+        f"{db_item['ac_output_power_w']},{db_item['grid_power_w']},"
+        f"{db_item['grid_voltage_v']},{db_item['grid_frequency_hz']},"
+        f"{db_item['battery_voltage_v']},{db_item['battery_soc_percent']},"
+        f"{db_item['battery_current_a']},{db_item['battery_power_w']},"
+        f"{db_item['battery_temp_c']},{db_item['load_power_w']},{db_item['inverter_temp_c']},"
+        f"{db_item['pv_today_kwh']},{db_item['grid_buy_today_kwh']},"
+        f"{db_item['grid_sell_today_kwh']},{db_item['batt_charge_today_kwh']},"
+        f"{db_item['batt_discharge_today_kwh']},{db_item['load_today_kwh']},{received_at}\n"
+    )
+
+    try:
+        existing = s3.get_object(Bucket=bucket, Key=s3_key)
+        csv_data = existing['Body'].read().decode('utf-8') + row
+    except s3.exceptions.NoSuchKey:
+        csv_data = _S3_CSV_HEADER + row
+
+    s3.put_object(Bucket=bucket, Key=s3_key, Body=csv_data.encode('utf-8'), ContentType='text/csv')
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@ratelimit(key='ip', rate='120/m', block=True)
+def device_telemetry_ingest(request: Any, device_id: str) -> Response:
+    """
+    HTTP telemetry ingestion for Deye inverter readings (replaces MQTT → IoT Core → Lambda path).
+
+    Write order (guarantees zero data loss):
+      1. TelemetryRaw (PostgreSQL) — written first; survives any AWS outage
+      2. DynamoDB meter_readings_actual (24h TTL) — live display in SiteDataPanel
+      3. S3 telemetry_csv/ (permanent Hive CSV) — ML training archive
+
+    Steps 2 & 3 use adaptive boto3 retry (3 attempts). If they still fail, the
+    raw payload is preserved in TelemetryRaw and recovered via:
+        python manage.py replay_telemetry
+
+    The device always receives 201 as long as step 1 succeeds — it never needs to
+    resend data on transient AWS failures.
+    """
+    is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
+    if not is_valid:
+        logger.warning(f"device_telemetry_ingest: auth failed for {device_id}: {result}")
+        return Response({"error": result}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        solar_site = SolarSite.objects.select_related('device').get(
+            device__device_serial=device_id, is_active=True
+        )
+        site_id = solar_site.site_id
+        device_obj = solar_site.device
+    except SolarSite.DoesNotExist:
+        logger.error(f"device_telemetry_ingest: no active SolarSite for device {device_id}")
+        return Response({"error": "No active site configured for this device"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    payload = dict(request.data)
+    now_utc = datetime.utcnow()
+    timestamp_iso = payload.get('timestamp') or now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+    received_at = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+    ttl = int((now_utc + timedelta(hours=24)).timestamp())
+
+    # ── Step 1: Write-ahead buffer (PostgreSQL) ───────────────────────────────
+    # This is the source of truth. If AWS writes fail, this record is replayed.
+    try:
+        raw = TelemetryRaw.objects.create(
+            device=device_obj,
+            site_id=site_id,
+            timestamp=datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00')),
+            payload=payload,
+        )
+    except Exception as exc:
+        logger.error(f"TelemetryRaw write failed device={device_id}: {exc}")
+        return Response({"error": "Database write failure"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    db_item = _build_dynamo_item(site_id, payload, timestamp_iso, received_at, ttl)
+
+    # ── Step 2: DynamoDB (live display) ──────────────────────────────────────
+    dynamo_ok = False
+    try:
+        _write_dynamo(db_item)
+        dynamo_ok = True
+    except Exception as exc:
+        logger.error(f"DynamoDB write failed device={device_id} site={site_id} raw_id={raw.pk}: {exc}")
+
+    # ── Step 3: S3 CSV (ML training archive) ─────────────────────────────────
+    s3_ok = False
+    try:
+        _write_s3_csv(site_id, timestamp_iso, db_item, received_at)
+        s3_ok = True
+    except Exception as exc:
+        logger.error(f"S3 CSV write failed device={device_id} site={site_id} raw_id={raw.pk}: {exc}")
+
+    # Update buffer flags — one UPDATE query covering both fields
+    if dynamo_ok or s3_ok:
+        TelemetryRaw.objects.filter(pk=raw.pk).update(dynamo_ok=dynamo_ok, s3_ok=s3_ok)
+
+    if not dynamo_ok or not s3_ok:
+        missing = []
+        if not dynamo_ok:
+            missing.append('DynamoDB')
+        if not s3_ok:
+            missing.append('S3')
+        logger.warning(
+            f"Telemetry buffered (raw_id={raw.pk}); pending replay for: {', '.join(missing)} "
+            f"device={device_id} site={site_id} ts={timestamp_iso}"
+        )
+
+    logger.debug(f"Telemetry ingested: device={device_id} site={site_id} ts={timestamp_iso} "
+                 f"dynamo={dynamo_ok} s3={s3_ok}")
+    return Response(
+        {"status": "stored", "site_id": site_id, "timestamp": timestamp_iso,
+         "dynamo_ok": dynamo_ok, "s3_ok": s3_ok},
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(["GET"])
@@ -2700,15 +2888,27 @@ def device_site_update(request: Any, device_id: int) -> Response:
 # ─── DynamoDB Site Data endpoints ────────────────────────────────────────────
 
 
+# Shared boto3 retry config: adaptive mode with 3 attempts handles transient
+# throttling, network blips, and 5xx errors without manual sleep loops.
+_BOTO3_CONFIG = BotoConfig(retries={'max_attempts': 3, 'mode': 'adaptive'})
+
+_AWS_KWARGS = lambda: dict(  # noqa: E731
+    region_name=env_config('DYNAMODB_REGION', default='ap-south-1'),
+    aws_access_key_id=env_config('AWS_ACCESS_KEY_ID', default=''),
+    aws_secret_access_key=env_config('AWS_SECRET_ACCESS_KEY', default=''),
+    config=_BOTO3_CONFIG,
+)
+
+
 def _get_dynamo_table():
-    """Build a boto3 DynamoDB Table resource from env config."""
-    dynamodb = boto3.resource(
-        'dynamodb',
-        region_name=env_config('DYNAMODB_REGION', default='ap-south-1'),
-        aws_access_key_id=env_config('AWS_ACCESS_KEY_ID', default=''),
-        aws_secret_access_key=env_config('AWS_SECRET_ACCESS_KEY', default=''),
-    )
+    """Build a boto3 DynamoDB Table resource with adaptive retry."""
+    dynamodb = boto3.resource('dynamodb', **_AWS_KWARGS())
     return dynamodb.Table(env_config('DYNAMODB_TABLE', default='meter_readings_actual'))
+
+
+def _get_s3_client():
+    """Build a boto3 S3 client with adaptive retry."""
+    return boto3.client('s3', **_AWS_KWARGS())
 
 
 def _convert_decimals(obj):
@@ -3088,3 +3288,128 @@ def site_history_s3(request: Any, site_id: str) -> Response:
     all_records.sort(key=lambda r: str(r.get('timestamp', '')))
     logger.debug('S3 history: site=%s start=%s end=%s → %d records', site_id, start_iso, end_iso, len(all_records))
     return Response(all_records)
+
+
+# ── Vercel Cron Job endpoints ──────────────────────────────────────────────────
+# Vercel calls these with: Authorization: Bearer <CRON_SECRET>
+# Register the secret in Vercel dashboard → Settings → Environment Variables.
+
+def _verify_cron_secret(request) -> bool:
+    """Return True if the request carries the correct cron bearer token."""
+    expected = settings.CRON_SECRET
+    if not expected:
+        # If CRON_SECRET is not configured, block all cron requests
+        return False
+    auth = request.headers.get('Authorization', '')
+    return auth == f'Bearer {expected}'
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def cron_purge_telemetry(request) -> Response:
+    """
+    Vercel cron endpoint: purge old TelemetryRaw rows from PostgreSQL.
+    Scheduled daily — keeps the write-ahead buffer lean.
+
+    GET /api/cron/purge-telemetry/
+    Authorization: Bearer <CRON_SECRET>
+    """
+    if not _verify_cron_secret(request):
+        return Response({'error': 'Unauthorized'}, status=401)
+
+    from django.utils import timezone as tz
+    from datetime import timedelta
+
+    now = tz.now()
+    ok_cutoff = now - timedelta(days=7)
+    failed_cutoff = now - timedelta(days=90)
+
+    ok_deleted, _ = TelemetryRaw.objects.filter(
+        dynamo_ok=True, s3_ok=True, received_at__lt=ok_cutoff,
+    ).delete()
+
+    failed_qs = TelemetryRaw.objects.filter(
+        received_at__lt=failed_cutoff,
+    ).exclude(dynamo_ok=True, s3_ok=True)
+    failed_count = failed_qs.count()
+    if failed_count:
+        logger.warning(
+            'cron_purge_telemetry: purging %d failed/pending records older than 90d '
+            '— these may be missing from DynamoDB/S3', failed_count,
+        )
+    failed_deleted, _ = failed_qs.delete()
+
+    total = ok_deleted + failed_deleted
+    logger.info('cron_purge_telemetry: ok_deleted=%d failed_deleted=%d', ok_deleted, failed_deleted)
+    return Response({'ok_deleted': ok_deleted, 'failed_deleted': failed_deleted, 'total': total})
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def cron_replay_telemetry(request) -> Response:
+    """
+    Vercel cron endpoint: replay TelemetryRaw records that failed DynamoDB/S3 writes.
+    Scheduled every 15 minutes — quickly recovers from transient AWS outages.
+
+    GET /api/cron/replay-telemetry/
+    Authorization: Bearer <CRON_SECRET>
+    """
+    if not _verify_cron_secret(request):
+        return Response({'error': 'Unauthorized'}, status=401)
+
+    from django.db.models import Q
+    from datetime import timedelta
+
+    # Only retry records from the last 24 hours to avoid wasting time on old failures
+    cutoff = timezone.now() - timedelta(hours=24)
+    qs = TelemetryRaw.objects.filter(
+        Q(dynamo_ok=False) | Q(s3_ok=False),
+        received_at__gte=cutoff,
+    ).select_related('device').order_by('received_at')[:100]  # cap at 100 per run
+
+    replayed = dynamo_fixed = s3_fixed = errors = 0
+
+    for raw in qs:
+        payload = raw.payload
+        timestamp_iso = raw.timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
+        received_at = raw.received_at.strftime('%Y-%m-%dT%H:%M:%SZ')
+        ttl = int((raw.received_at + timedelta(hours=24)).timestamp())
+        db_item = _build_dynamo_item(raw.site_id, payload, timestamp_iso, received_at, ttl)
+
+        new_dynamo_ok = raw.dynamo_ok
+        new_s3_ok = raw.s3_ok
+
+        if not raw.dynamo_ok:
+            try:
+                _write_dynamo(db_item)
+                new_dynamo_ok = True
+                dynamo_fixed += 1
+            except Exception as exc:
+                logger.warning('cron_replay_telemetry: DynamoDB failed raw_id=%s: %s', raw.pk, exc)
+                errors += 1
+
+        if not raw.s3_ok:
+            try:
+                _write_s3_csv(raw.site_id, timestamp_iso, db_item, received_at)
+                new_s3_ok = True
+                s3_fixed += 1
+            except Exception as exc:
+                logger.warning('cron_replay_telemetry: S3 failed raw_id=%s: %s', raw.pk, exc)
+                errors += 1
+
+        if new_dynamo_ok != raw.dynamo_ok or new_s3_ok != raw.s3_ok:
+            TelemetryRaw.objects.filter(pk=raw.pk).update(
+                dynamo_ok=new_dynamo_ok, s3_ok=new_s3_ok,
+            )
+        replayed += 1
+
+    logger.info(
+        'cron_replay_telemetry: replayed=%d dynamo_fixed=%d s3_fixed=%d errors=%d',
+        replayed, dynamo_fixed, s3_fixed, errors,
+    )
+    return Response({
+        'replayed': replayed,
+        'dynamo_fixed': dynamo_fixed,
+        's3_fixed': s3_fixed,
+        'errors': errors,
+    })

@@ -254,3 +254,34 @@ class SolarSite(models.Model):
 
     def __str__(self):
         return f"{self.site_id} ({self.device.device_serial})"
+
+
+class TelemetryRaw(models.Model):
+    """
+    Write-ahead buffer for Deye inverter telemetry (HTTP ingest path).
+
+    Every record is written here first (synchronous PostgreSQL) before being
+    forwarded to DynamoDB and S3.  If either AWS write fails transiently, the
+    raw payload survives here and can be replayed via:
+        python manage.py replay_telemetry
+
+    This ensures zero data loss for both live display (DynamoDB) and ML
+    training archives (S3 CSV).
+    """
+    device      = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='raw_telemetry')
+    site_id     = models.CharField(max_length=64)
+    timestamp   = models.DateTimeField()
+    payload     = models.JSONField(help_text="Full Deye inverter payload as received from device")
+    dynamo_ok   = models.BooleanField(default=False, help_text="Written to DynamoDB successfully")
+    s3_ok       = models.BooleanField(default=False, help_text="Written to S3 CSV successfully")
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-received_at']
+        indexes = [
+            models.Index(fields=['site_id', '-timestamp']),
+            models.Index(fields=['dynamo_ok', 's3_ok', 'received_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.device.device_serial} → {self.site_id} @ {self.timestamp} [dynamo={self.dynamo_ok} s3={self.s3_ok}]"

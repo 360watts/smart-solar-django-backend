@@ -27,6 +27,8 @@ urlpatterns = [
 	path("devices/<str:device_id>/configAck", views.config_ack, name="config_ack"),
 	path("devices/<str:device_id>/logs", views.logs, name="logs"),
 	path("devices/<str:device_id>/deviceLogs", views.logs, name="device_logs"),
+	# HTTP telemetry ingestion (replaces MQTT → IoT Core → Lambda path)
+	path("devices/<str:device_id>/telemetry", views.device_telemetry_ingest, name="device_telemetry_ingest"),
 	path("devices/<str:device_serial>/telemetry/latest", views.telemetry_latest, name="telemetry_latest"),
 	
 	# Telemetry and monitoring
@@ -89,4 +91,8 @@ urlpatterns = [
 	
 	# OTA Update endpoints
 	path("ota/", include("ota.urls")),
+
+	# Vercel Cron Job endpoints (called by Vercel scheduler, protected by CRON_SECRET)
+	path("cron/purge-telemetry/", views.cron_purge_telemetry, name="cron_purge_telemetry"),
+	path("cron/replay-telemetry/", views.cron_replay_telemetry, name="cron_replay_telemetry"),
 ]

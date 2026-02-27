@@ -34,6 +34,11 @@ if not _secret_key:
     _secret_key = 'django-insecure-development-only-key-change-in-production'
 SECRET_KEY = _secret_key
 
+# Secret token for Vercel cron job endpoints.
+# Set this env var in Vercel dashboard → Settings → Environment Variables.
+# Must match the Authorization header sent by Vercel: "Bearer <CRON_SECRET>"
+CRON_SECRET = config('CRON_SECRET', default='')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=False, cast=bool)
 

@@ -344,15 +344,15 @@ def ota_check(request, device_id):
             'id': f'fw_{latest_firmware.id}',
             'version': latest_firmware.version,
             'size': latest_firmware.size,
-            'url': download_url,
-            'fallback_url': proxy_url,
-            'url_type': url_type,
+            'url': proxy_url,
+            'fallback_url': download_url,
+            'url_type': 'proxy',
             'url_ttl': url_ttl,
             'checksum': latest_firmware.checksum or '',
             'status': 1  # Update available
         }
-        
-        logger.info(f"OTA Update Available - Device: {device_id}, FW: {latest_firmware.version}, URL: {download_url}")
+
+        logger.info(f"OTA Update Available - Device: {device_id}, FW: {latest_firmware.version}, URL: {proxy_url}")
         
         return Response(response_data, status=status.HTTP_200_OK)
         

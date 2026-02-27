@@ -57,6 +57,11 @@ def _auto_fail_stale_logs(campaign):
         return 0
 
     now = timezone.now()
+    # Capture device IDs BEFORE .update() — the queryset re-evaluates after
+    # the status changes to FAILED and would return an empty list otherwise.
+    stale_device_ids = list(
+        stale_qs.values_list('device_id', flat=True)
+    )
     stale_qs.update(
         status=DeviceUpdateLog.Status.FAILED,
         error_message=(
@@ -67,9 +72,6 @@ def _auto_fail_stale_logs(campaign):
 
     # Also deactivate the device targets for stale devices so they stop
     # receiving the update command on heartbeat.
-    stale_device_ids = list(
-        stale_qs.values_list('device_id', flat=True)
-    )
     DeviceTargetedFirmware.objects.filter(
         device_id__in=stale_device_ids,
         targeted_update=campaign,
@@ -182,6 +184,21 @@ def ota_check(request, device_id):
                     status=DeviceUpdateLog.Status.CHECKING
                 )
         
+        # If the log was auto-failed, don't reopen it — tell the device no
+        # update is available so it stops retrying against a dead campaign.
+        if update_log and update_log.status == DeviceUpdateLog.Status.FAILED:
+            logger.info(
+                'OTA Check - Device %s log %s is FAILED, returning no-update',
+                device_id, update_log.id,
+            )
+            return Response({
+                'id': 'none',
+                'version': current_firmware,
+                'size': 0,
+                'url': '',
+                'status': 0,
+            }, status=status.HTTP_200_OK)
+
         # Update the log
         update_log.last_checked_at = timezone.now()
         update_log.current_firmware = current_firmware
@@ -318,11 +335,17 @@ def ota_check(request, device_id):
                 reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
             )
 
+        # Always build the Django proxy URL so it can be sent as a fallback
+        proxy_url = request.build_absolute_uri(
+            reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
+        )
+
         response_data = {
             'id': f'fw_{latest_firmware.id}',
             'version': latest_firmware.version,
             'size': latest_firmware.size,
             'url': download_url,
+            'fallback_url': proxy_url,
             'url_type': url_type,
             'url_ttl': url_ttl,
             'checksum': latest_firmware.checksum or '',

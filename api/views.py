@@ -1342,7 +1342,7 @@ def users_list(request):
             code="INVALID_PAGINATION",
         )
 
-    users = User.objects.filter(is_staff=False).select_related('userprofile').order_by('-date_joined')
+    users = User.objects.filter(is_staff=False, is_superuser=False).select_related('userprofile').order_by('-date_joined')
 
     if search:
         users = users.filter(

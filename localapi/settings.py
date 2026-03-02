@@ -350,9 +350,9 @@ CACHES = {
 
 # django-ratelimit configuration
 RATELIMIT_VIEW_PREFIX = 'api:'
-# Rate limiting disabled in serverless - requires persistent cache (Redis)
-# Enable this when you have a Redis connection configured
-RATELIMIT_ENABLE = config('RATELIMIT_ENABLE', default=False, cast=bool)
+# In production, default to True; override with RATELIMIT_ENABLE=false if using DummyCache.
+# For rate limiting to enforce, configure Redis in CACHES (see comment above).
+RATELIMIT_ENABLE = config('RATELIMIT_ENABLE', default=not DEBUG, cast=bool)
 
 # REST Framework settings
 REST_FRAMEWORK = {

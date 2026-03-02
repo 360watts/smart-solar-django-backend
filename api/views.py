@@ -45,6 +45,27 @@ DEVICE_JWT_SECRET = env_config('DEVICE_JWT_SECRET', default=settings.SECRET_KEY)
 logger = logging.getLogger(__name__)
 
 
+# ============== UNIFIED ERROR RESPONSE ==============
+
+def error_response(
+    message: str,
+    status_code: int = status.HTTP_400_BAD_REQUEST,
+    code: str | None = None,
+    details: dict | None = None,
+) -> Response:
+    """
+    Return a consistent error envelope for all API errors.
+    Shape: {"error": "<message>", "code": "<optional>", "details": <optional>}
+    Frontend can rely on response.error and optionally response.code / response.details.
+    """
+    body = {"error": message}
+    if code:
+        body["code"] = code
+    if details is not None:
+        body["details"] = details
+    return Response(body, status=status_code)
+
+
 # ============== CUSTOM PARSERS ==============
 
 class PlainTextParser(BaseParser):
@@ -873,7 +894,11 @@ def devices_list(request: Any) -> Response:
         page = int(request.GET.get('page', 1))
         page_size = min(int(request.GET.get('page_size', 25)), 100)  # Max 100 per page
     except (ValueError, TypeError):
-        return Response({"error": "Invalid page or page_size parameter. Must be integers."}, status=status.HTTP_400_BAD_REQUEST)
+        return error_response(
+            "Invalid page or page_size parameter. Must be integers.",
+            status.HTTP_400_BAD_REQUEST,
+            code="INVALID_PAGINATION",
+        )
     
     # Optimize query: only fetch related data we need (including audit fields)
     devices = Device.objects.select_related('user', 'created_by', 'updated_by').all().order_by("-provisioned_at")
@@ -937,14 +962,17 @@ def devices_list(request: Any) -> Response:
 def config_get(request: Any) -> Response:
     """
     Get gateway configuration for React frontend.
-    Returns 200 with {} when no configuration exists so the browser
-    does not log a 404 network error. The frontend checks data?.configId
-    and switches to global mode when the response is empty.
+    Returns 404 with structured body when no configuration exists so the
+    frontend can distinguish "no config" from a failed request.
     Requires staff authentication.
     """
     config = GatewayConfig.objects.order_by("-updated_at").first()
     if not config:
-        return Response({})
+        return error_response(
+            "No configuration found",
+            status.HTTP_404_NOT_FOUND,
+            code="CONFIG_NOT_FOUND",
+        )
 
     return Response(GatewayConfigSerializer(config).data)
 
@@ -962,7 +990,11 @@ def telemetry_all(request: Any) -> Response:
     try:
         limit = int(request.GET.get("limit", 100))
     except (ValueError, TypeError):
-        return Response({"error": "Invalid limit parameter. Must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        return error_response(
+            "Invalid limit parameter. Must be an integer.",
+            status.HTTP_400_BAD_REQUEST,
+            code="INVALID_LIMIT",
+        )
     
     telemetry = TelemetryData.objects.select_related('device').order_by("-timestamp")[:limit]
     return Response(TelemetryDataSerializer(telemetry, many=True).data)
@@ -972,11 +1004,15 @@ def telemetry_all(request: Any) -> Response:
 @permission_classes([IsStaffUser])
 def alerts_list(request: Any) -> Response:
     """
-    Get system alerts for React frontend
-    Requires staff authentication
-    Optimized with select_related to reduce database queries
+    Get system alerts for React frontend.
+    Requires staff authentication.
+
+    Alert strategy: This endpoint returns *ephemeral* alerts generated from
+    recent telemetry (offline devices, low voltage, high temp). Each item has
+    "generated": true. For persistent alerts with status workflow (ACTIVE →
+    ACKNOWLEDGED → RESOLVED), use GET /api/alerts/manage/ instead.
     """
-    # For now, generate mock alerts based on telemetry data
+    # Generate ephemeral alerts from recent telemetry
     alerts = []
     recent_telemetry = TelemetryData.objects.select_related('device').filter(timestamp__gte=timezone.now() - timedelta(hours=1))
     
@@ -1001,7 +1037,8 @@ def alerts_list(request: Any) -> Response:
                 "message": f"Device {device.device_serial} appears to be offline",
                 "device_id": device.device_serial,
                 "timestamp": timezone.now().isoformat(),
-                "resolved": False
+                "resolved": False,
+                "generated": True,
             })
     
     # Check for abnormal readings
@@ -1014,7 +1051,8 @@ def alerts_list(request: Any) -> Response:
                 "message": f"Low voltage detected: {telemetry.value}V on device {telemetry.device.device_serial}",
                 "device_id": telemetry.device.device_serial,
                 "timestamp": telemetry.timestamp.isoformat(),
-                "resolved": False
+                "resolved": False,
+                "generated": True,
             })
         elif telemetry.data_type == "temperature" and telemetry.value > 80:  # High temperature alert
             alerts.append({
@@ -1024,7 +1062,8 @@ def alerts_list(request: Any) -> Response:
                 "message": f"High temperature detected: {telemetry.value}°C on device {telemetry.device.device_serial}",
                 "device_id": telemetry.device.device_serial,
                 "timestamp": telemetry.timestamp.isoformat(),
-                "resolved": False
+                "resolved": False,
+                "generated": True,
             })
     
     return Response(alerts)
@@ -1287,12 +1326,24 @@ def get_current_user(request):
 @permission_classes([IsStaffUser])
 def users_list(request):
     """
-    List all users with profiles, with optional search
-    Requires staff authentication
+    List all users with profiles, with optional search and pagination.
+    Same envelope as devices_list: count, total_pages, current_page, page_size,
+    has_next, has_previous, next_page, previous_page, results.
+    Requires staff authentication.
     """
     search = request.GET.get('search', '').strip()
-    users = User.objects.all().select_related('userprofile')
-    
+    try:
+        page = int(request.GET.get('page', 1))
+        page_size = min(int(request.GET.get('page_size', 25)), 100)
+    except (ValueError, TypeError):
+        return error_response(
+            "Invalid page or page_size parameter. Must be integers.",
+            status.HTTP_400_BAD_REQUEST,
+            code="INVALID_PAGINATION",
+        )
+
+    users = User.objects.all().select_related('userprofile').order_by('-date_joined')
+
     if search:
         users = users.filter(
             Q(username__icontains=search) |
@@ -1302,9 +1353,14 @@ def users_list(request):
             Q(userprofile__mobile_number__icontains=search) |
             Q(userprofile__address__icontains=search)
         )
-    
+
+    total_count = users.count()
+    total_pages = (total_count + page_size - 1) // page_size if page_size else 0
+    offset = (page - 1) * page_size
+    paginated = users[offset : offset + page_size]
+
     data = []
-    for user in users:
+    for user in paginated:
         profile = getattr(user, 'userprofile', None)
         data.append({
             'id': user.id,
@@ -1319,7 +1375,18 @@ def users_list(request):
             'is_superuser': user.is_superuser,
             'date_joined': user.date_joined.isoformat(),
         })
-    return Response(data)
+
+    return Response({
+        'count': total_count,
+        'total_pages': total_pages,
+        'current_page': page,
+        'page_size': page_size,
+        'has_next': page < total_pages,
+        'has_previous': page > 1,
+        'next_page': page + 1 if page < total_pages else None,
+        'previous_page': page - 1 if page > 1 else None,
+        'results': data,
+    })
 
 
 @api_view(['POST'])

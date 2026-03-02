@@ -455,6 +455,12 @@ DEVICE_TOKEN_MAX_AGE_DAYS = 730
 # Minutes without a log update before an in-progress OTA is auto-failed
 OTA_UPDATE_TIMEOUT_MINUTES = 30
 
+# Bytes per Range request chunk advertised in the OTA check response as `chunk_size`.
+# Devices whose modem AT HTTP receive buffer cannot hold the full firmware binary
+# should loop through Range requests of this size until the whole file is received.
+# 32 KB is conservative — increase via env var if the modem buffer is larger.
+OTA_CHUNK_SIZE = int(config('OTA_CHUNK_SIZE', default=32768))
+
 # Telemetry alert thresholds (used in dynamic alert generation)
 ALERT_VOLTAGE_LOW_THRESHOLD = 10    # volts
 ALERT_TEMPERATURE_HIGH_THRESHOLD = 80  # °C

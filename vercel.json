@@ -5,7 +5,7 @@
   "outputDirectory": "staticfiles",
   "functions": {
     "api/index.py": {
-      "maxDuration": 30
+      "maxDuration": 300
     }
   },
   "crons": [

@@ -370,6 +370,11 @@ def ota_check(request, device_id):
             reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
         )
 
+        # chunk_size: recommended bytes per Range request for devices whose
+        # modem AT HTTP buffer cannot hold the full file in one response.
+        # Configurable via OTA_CHUNK_SIZE setting (default 32 KB).
+        chunk_size = getattr(settings, 'OTA_CHUNK_SIZE', 32768)
+
         response_data = {
             'id': f'fw_{latest_firmware.id}',
             'version': latest_firmware.version,
@@ -379,6 +384,7 @@ def ota_check(request, device_id):
             'url_type': 'proxy',
             'url_ttl': url_ttl,
             'checksum': latest_firmware.checksum or '',
+            'chunk_size': chunk_size,
             'status': 1  # Update available
         }
 

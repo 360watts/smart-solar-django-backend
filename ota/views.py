@@ -184,20 +184,49 @@ def ota_check(request, device_id):
                     status=DeviceUpdateLog.Status.CHECKING
                 )
         
-        # If the log was auto-failed, don't reopen it — tell the device no
-        # update is available so it stops retrying against a dead campaign.
+        # If the log was auto-failed, normally return no-update so the device
+        # stops retrying. Allow retry if: (1) request has retry=1, or
+        # (2) failure is older than OTA_RETRY_AFTER_FAILED_MINUTES.
         if update_log and update_log.status == DeviceUpdateLog.Status.FAILED:
+            allow_retry = False
+            retry_minutes = getattr(settings, 'OTA_RETRY_AFTER_FAILED_MINUTES', 60)
+            if retry_minutes is not None and retry_minutes >= 0:
+                failed_at = update_log.completed_at or update_log.last_checked_at
+                if failed_at:
+                    cutoff = timezone.now() - timedelta(minutes=int(retry_minutes))
+                    if failed_at < cutoff:
+                        allow_retry = True
+            if not allow_retry:
+                # Optional explicit retry flag (query or body)
+                retry_param = request.query_params.get('retry') or (data.get('retry') if isinstance(data, dict) else None)
+                if str(retry_param).strip() in ('1', 'true', 'yes'):
+                    allow_retry = True
+            if not allow_retry:
+                logger.info(
+                    'OTA Check - Device %s log %s is FAILED, returning no-update',
+                    device_id, update_log.id,
+                )
+                return Response({
+                    'id': 'none',
+                    'version': current_firmware,
+                    'size': 0,
+                    'url': '',
+                    'status': 0,
+                }, status=status.HTTP_200_OK)
+            # Allow retry: create a new log and continue
             logger.info(
-                'OTA Check - Device %s log %s is FAILED, returning no-update',
+                'OTA Check - Device %s log %s was FAILED, allowing retry (new log)',
                 device_id, update_log.id,
             )
-            return Response({
-                'id': 'none',
-                'version': current_firmware,
-                'size': 0,
-                'url': '',
-                'status': 0,
-            }, status=status.HTTP_200_OK)
+            update_log = DeviceUpdateLog.objects.create(
+                device=device,
+                firmware_version=update_log.firmware_version,
+                current_firmware=current_firmware,
+                status=DeviceUpdateLog.Status.CHECKING,
+            )
+            if targeted_firmware:
+                update_log.firmware_version = targeted_firmware
+                update_log.save(update_fields=['firmware_version'])
 
         # Update the log
         update_log.last_checked_at = timezone.now()
@@ -335,7 +364,8 @@ def ota_check(request, device_id):
                 reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
             )
 
-        # Always build the Django proxy URL so it can be sent as a fallback
+        # Always build the Django proxy URL so it can be sent as primary (device
+        # may not support CloudFront e.g. redirects/TLS). Direct URL as fallback.
         proxy_url = request.build_absolute_uri(
             reverse('ota_download', kwargs={'firmware_id': latest_firmware.id})
         )

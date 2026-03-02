@@ -11,9 +11,13 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import models as db_models
 from datetime import timedelta
+import json
 import os
 import hashlib
 import logging
+import time
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.config import Config
@@ -314,6 +318,36 @@ def ota_check(request, device_id):
                 download_url = f"https://{cf_domain}/{cf_key}"
                 url_type = 'cloudfront'
                 logger.info(f"CloudFront URL for firmware {latest_firmware.version}: {download_url}")
+                # #region agent log
+                try:
+                    _debug_log = "/home/ubuntu/work/360watts-data/.cursor/debug-dae4a9.log"
+                    _ts = int(time.time() * 1000)
+                    _entry = {"sessionId": "dae4a9", "hypothesisId": "H1", "location": "ota/views.py:CloudFront URL build", "message": "CloudFront URL construction", "data": {"file_name": file_name, "aws_location": aws_location or "(empty)", "cf_key": cf_key, "download_url": download_url, "firmware_version": latest_firmware.version}, "timestamp": _ts}
+                    with open(_debug_log, "a") as _f:
+                        _f.write(json.dumps(_entry) + "\n")
+                    for _meth, _headers, _hid in [("HEAD", {}, "H2"), ("GET", {"Range": "bytes=0-1023"}, "H5")]:
+                        try:
+                            _req = Request(download_url, headers=_headers or {}, method=_meth)
+                            _resp = urlopen(_req, timeout=12)
+                            _code = getattr(_resp, "status", getattr(_resp, "code", None))
+                            _h = _resp.headers
+                            _loc = _h.get("Location", "") if _h else ""
+                            _cl = _h.get("Content-Length", "") if _h else ""
+                            _cr = _h.get("Content-Range", "") if _h else ""
+                            with open(_debug_log, "a") as _f:
+                                _f.write(json.dumps({"sessionId": "dae4a9", "hypothesisId": _hid, "location": "ota/views.py:CloudFront probe", "message": "CF %s response" % _meth, "data": {"method": _meth, "status": _code, "Location": _loc, "Content-Length": _cl, "Content-Range": _cr}, "timestamp": int(time.time() * 1000)}) + "\n")
+                        except HTTPError as _e:
+                            with open(_debug_log, "a") as _f:
+                                _f.write(json.dumps({"sessionId": "dae4a9", "hypothesisId": "H3", "location": "ota/views.py:CloudFront probe", "message": "CF request HTTP error", "data": {"method": _meth, "code": _e.code, "reason": str(getattr(_e, "reason", ""))}, "timestamp": int(time.time() * 1000)}) + "\n")
+                        except URLError as _e:
+                            with open(_debug_log, "a") as _f:
+                                _f.write(json.dumps({"sessionId": "dae4a9", "hypothesisId": "H2", "location": "ota/views.py:CloudFront probe", "message": "CF request URL/connection error", "data": {"method": _meth, "reason": str(getattr(_e, "reason", ""))}, "timestamp": int(time.time() * 1000)}) + "\n")
+                        except Exception as _e:
+                            with open(_debug_log, "a") as _f:
+                                _f.write(json.dumps({"sessionId": "dae4a9", "hypothesisId": "H3", "location": "ota/views.py:CloudFront probe", "message": "CF request error", "data": {"method": _meth, "error": str(_e)}, "timestamp": int(time.time() * 1000)}) + "\n")
+                except Exception:
+                    pass
+                # #endregion
 
             # --- 2. S3 presigned (fallback when CF not configured) ---
             if not download_url:

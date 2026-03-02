@@ -1389,6 +1389,69 @@ def users_list(request):
     })
 
 
+@api_view(['GET'])
+@permission_classes([IsStaffUser])
+def employees_list(request: Any) -> Response:
+    """
+    List staff employees (is_staff=True, is_superuser=False) with optional search and pagination.
+    Superusers/admins are excluded — they are never regular employees.
+    Same envelope as users_list and devices_list.
+    """
+    search = request.GET.get('search', '').strip()
+    try:
+        page = int(request.GET.get('page', 1))
+        page_size = min(int(request.GET.get('page_size', 25)), 100)
+    except (ValueError, TypeError):
+        return error_response(
+            "Invalid page or page_size parameter. Must be integers.",
+            status.HTTP_400_BAD_REQUEST,
+            code="INVALID_PAGINATION",
+        )
+
+    employees = User.objects.filter(is_staff=True, is_superuser=False).select_related('userprofile').order_by('-date_joined')
+
+    if search:
+        employees = employees.filter(
+            Q(username__icontains=search) |
+            Q(email__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search)
+        )
+
+    total_count = employees.count()
+    offset = (page - 1) * page_size
+    paginated = employees[offset:offset + page_size]
+
+    data = []
+    for user in paginated:
+        profile = getattr(user, 'userprofile', None)
+        data.append({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'mobile_number': profile.mobile_number if profile else None,
+            'address': profile.address if profile else None,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
+            'date_joined': user.date_joined.isoformat(),
+        })
+
+    total_pages = (total_count + page_size - 1) // page_size
+    return Response({
+        'count': total_count,
+        'total_pages': total_pages,
+        'current_page': page,
+        'page_size': page_size,
+        'has_next': page < total_pages,
+        'has_previous': page > 1,
+        'next_page': page + 1 if page < total_pages else None,
+        'previous_page': page - 1 if page > 1 else None,
+        'results': data,
+    })
+
+
 @api_view(['POST'])
 @permission_classes([IsStaffUser])
 def create_user(request):

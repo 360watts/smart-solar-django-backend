@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.http import FileResponse, HttpResponse, Http404
+from django.http import FileResponse, HttpResponse, HttpResponseRedirect, Http404
 from django.utils import timezone
 from django.conf import settings
 from django.urls import reverse
@@ -494,11 +494,65 @@ def ota_download(request, firmware_id):
                 response['Content-Length'] = file_size
                 response['Accept-Ranges'] = 'bytes'
         else:
-            response = FileResponse(firmware.file.open('rb'))
-            response['Content-Type'] = 'application/octet-stream'
-            response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
-            response['Content-Length'] = file_size
-            response['Accept-Ranges'] = 'bytes'
+            # Non-Range full-file request.
+            # FileResponse uses Transfer-Encoding: chunked which Vercel's proxy
+            # doesn't forward correctly to the device (HTTPSEND:FAIL).
+            # Read the file into memory and return a fixed Content-Length response
+            # (same as what Range responses do, just for the whole file).
+            file_content = None
+            try:
+                from storages.backends.s3boto3 import S3Boto3Storage
+                if isinstance(firmware.file.storage, S3Boto3Storage):
+                    s3_client = boto3.client(
+                        's3',
+                        aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
+                        aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
+                        region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'us-east-1'),
+                    )
+                    file_name = firmware.file.name
+                    aws_location = getattr(settings, 'AWS_LOCATION', '')
+                    key = (
+                        f"{aws_location}/{file_name}"
+                        if aws_location and not file_name.startswith(aws_location + '/')
+                        else file_name
+                    )
+                    s3_resp = s3_client.get_object(
+                        Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=key
+                    )
+                    file_content = s3_resp['Body'].read()
+                    logger.info(
+                        'OTA Download [full/S3] - Firmware: %s, %d bytes, device: %s',
+                        firmware.version, len(file_content), device_serial,
+                    )
+            except Exception as read_err:
+                logger.warning(
+                    'OTA Download S3 read failed (%s), falling back to local read', read_err
+                )
+
+            if file_content is None:
+                try:
+                    with firmware.file.open('rb') as fh:
+                        file_content = fh.read()
+                    logger.info(
+                        'OTA Download [full/local] - Firmware: %s, %d bytes, device: %s',
+                        firmware.version, len(file_content), device_serial,
+                    )
+                except Exception as local_err:
+                    logger.error('OTA Download local read failed: %s', local_err)
+                    file_content = None
+
+            if file_content is not None:
+                response = HttpResponse(file_content, content_type='application/octet-stream')
+                response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
+                response['Content-Length'] = len(file_content)
+                response['Accept-Ranges'] = 'bytes'
+            else:
+                # Last-resort streaming fallback
+                response = FileResponse(firmware.file.open('rb'))
+                response['Content-Type'] = 'application/octet-stream'
+                response['Content-Disposition'] = f'attachment; filename="{firmware.filename}"'
+                response['Content-Length'] = file_size
+                response['Accept-Ranges'] = 'bytes'
 
         return response
         
@@ -534,6 +588,46 @@ def device_update_logs(request, device_id):
             {'error': 'Device not found'},
             status=status.HTTP_404_NOT_FOUND
         )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def reset_device_update_log(request, device_id):
+    """
+    Reset FAILED OTA update logs for a device so the next OTA check can
+    proceed without waiting for OTA_RETRY_AFTER_FAILED_MINUTES to elapse.
+
+    Deletes all FAILED logs for the device. Optionally limit to a specific
+    firmware by passing { "firmware_id": <int> } in the request body.
+    """
+    try:
+        device = Device.objects.filter(device_serial=device_id).first()
+        if not device:
+            return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        qs = DeviceUpdateLog.objects.filter(device=device, status=DeviceUpdateLog.Status.FAILED)
+
+        firmware_id = request.data.get('firmware_id') or request.query_params.get('firmware_id')
+        if firmware_id:
+            qs = qs.filter(firmware_version_id=firmware_id)
+
+        deleted_count, _ = qs.delete()
+
+        logger.info(
+            'OTA log reset - Device %s: deleted %d FAILED log(s)',
+            device_id, deleted_count,
+        )
+        return Response({
+            'device_id': device_id,
+            'deleted_logs': deleted_count,
+            'message': (
+                f'Deleted {deleted_count} FAILED log(s). '
+                'Next OTA check will return the pending update.'
+            ),
+        })
+    except Exception as e:
+        logger.error('OTA log reset error - Device %s: %s', device_id, e)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])
@@ -1395,7 +1489,7 @@ def ota_status(request, device_id):
             log.status = DeviceUpdateLog.Status.FAILED
             log.error_message = error_msg or 'Device reported update failure'
             log.save(update_fields=['status', 'error_message', 'last_checked_at', 'completed_at'])
-            logger.warning('Device %s reported OTA failure: %s', device_id, error_msg)
+            logger.info('Device %s reported OTA failure: %s', device_id, error_msg or 'no message')
 
             if device_target:
                 device_target.is_active = False

@@ -13,6 +13,8 @@ urlpatterns = [
     
     # Update logs and history
     path('devices/<str:device_id>/logs', views.device_update_logs, name='device_update_logs'),
+    # Reset FAILED logs so next OTA check retries immediately (no wait for retry timeout)
+    path('devices/<str:device_id>/logs/reset/', views.reset_device_update_log, name='reset_device_update_log'),
     
     # Firmware management
     path('firmware/', views.firmware_versions_list, name='firmware_list'),

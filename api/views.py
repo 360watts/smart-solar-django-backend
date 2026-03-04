@@ -1118,7 +1118,52 @@ def system_health(request: Any) -> Response:
 
 @api_view(["GET"])
 @permission_classes([IsStaffUser])
-@cache_page(60)  # Cache for 60 seconds  
+@cache_page(30)
+def telemetry_buffer_stats(request: Any) -> Response:
+    """
+    Telemetry buffer backlog stats for monitoring dashboard.
+    Surfaces TelemetryRaw dynamo_ok / s3_ok write-ahead flags.
+    """
+    from django.db.models import Min
+
+    total = TelemetryRaw.objects.count()
+    pending_dynamo = TelemetryRaw.objects.filter(dynamo_ok=False).count()
+    pending_s3 = TelemetryRaw.objects.filter(s3_ok=False).count()
+    failed_both = TelemetryRaw.objects.filter(dynamo_ok=False, s3_ok=False).count()
+    success = TelemetryRaw.objects.filter(dynamo_ok=True, s3_ok=True).count()
+    success_rate = (success / total * 100) if total > 0 else 100.0
+
+    # Oldest pending record age
+    oldest_pending = TelemetryRaw.objects.filter(
+        Q(dynamo_ok=False) | Q(s3_ok=False)
+    ).aggregate(oldest=Min('received_at'))['oldest']
+
+    oldest_pending_age_seconds = 0
+    if oldest_pending:
+        oldest_pending_age_seconds = (timezone.now() - oldest_pending).total_seconds()
+
+    total_pending = pending_dynamo + pending_s3 - failed_both
+    if total_pending == 0:
+        buffer_status = "healthy"
+    elif total_pending < 10:
+        buffer_status = "warning"
+    else:
+        buffer_status = "critical"
+
+    return Response({
+        "total": total,
+        "pending_dynamo": pending_dynamo,
+        "pending_s3": pending_s3,
+        "failed_both": failed_both,
+        "success_rate": round(success_rate, 1),
+        "oldest_pending_age_seconds": round(oldest_pending_age_seconds),
+        "status": buffer_status,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsStaffUser])
+@cache_page(60)  # Cache for 60 seconds
 def kpis(request: Any) -> Response:
     """
     Get key performance indicators for React frontend

@@ -37,6 +37,7 @@ urlpatterns = [
 	path("telemetry/", views.telemetry_all, name="telemetry_all"),
 	path("alerts/", views.alerts_list, name="alerts_list"),
 	path("health/", views.system_health, name="system_health"),
+	path("telemetry-buffer/stats/", views.telemetry_buffer_stats, name="telemetry_buffer_stats"),
 	path("kpis/", views.kpis, name="kpis"),
 	path("auth/register/", views.register_user, name="register_user"),
 	path("auth/login/", views.login_user, name="login_user"),

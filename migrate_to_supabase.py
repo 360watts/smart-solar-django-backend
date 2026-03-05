@@ -2,6 +2,11 @@
 """
 Run Django migrations against the Supabase database.
 Credentials are read from the .env file — never hardcode them here.
+
+Usage (from repo root):
+  python migrate_to_supabase.py
+
+Applies all pending migrations (e.g. api.0022_telemetrymessageid for X-Message-ID dedup).
 """
 import os
 import sys

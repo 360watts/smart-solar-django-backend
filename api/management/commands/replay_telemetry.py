@@ -43,9 +43,11 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from django.db.models import Q
 
+        # Order by (site_id, timestamp) so replay writes in chronological order per site,
+        # ensuring downstream consumers see a consistent timeline even if requests arrived out of order.
         qs = TelemetryRaw.objects.filter(
             Q(dynamo_ok=False) | Q(s3_ok=False)
-        ).select_related('device').order_by('received_at')
+        ).select_related('device').order_by('site_id', 'timestamp')
 
         if options['hours']:
             cutoff = timezone.now() - timedelta(hours=options['hours'])

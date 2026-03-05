@@ -7,7 +7,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from django.shortcuts import get_object_or_404
-from django.db import models, connection
+from django.db import models, connection, transaction
 from django.db.models import Q, Avg, Sum, Count, F
 from django.db.models.functions import Coalesce
 from django.conf import settings
@@ -26,6 +26,7 @@ from .serializers import (
 from .models import (
     Device, TelemetryData, GatewayConfig, UserProfile,
     SlaveDevice, RegisterMapping, DeviceLog, Alert, SolarSite, TelemetryRaw,
+    TelemetryMessageId,
 )
 from .serializers import AlertSerializer, SolarSiteSerializer
 from ota.models import DeviceTargetedFirmware
@@ -778,6 +779,10 @@ def device_telemetry_ingest(request: Any, device_id: str) -> Response:
 
     The device always receives 201 as long as step 1 succeeds — it never needs to
     resend data on transient AWS failures.
+
+    Message ordering: All reads order by payload timestamp so consumers see chronological
+    order. X-Message-ID deduplication prevents duplicate processing on retries. Replay
+    processes records by (site_id, timestamp) so downstream gets a consistent timeline.
     """
     is_valid, result = DeviceAuthentication.authenticate_device(request, device_id)
     if not is_valid:
@@ -800,15 +805,28 @@ def device_telemetry_ingest(request: Any, device_id: str) -> Response:
     received_at = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
     ttl = int((now_utc + timedelta(hours=24)).timestamp())
 
+    # ── Idempotency: X-Message-ID header deduplication ───────────────────────
+    message_id = (request.headers.get("X-Message-ID") or request.META.get("HTTP_X_MESSAGE_ID") or "").strip()[:255]
+    if message_id:
+        if TelemetryMessageId.objects.filter(device=device_obj, message_id=message_id).exists():
+            logger.debug(f"device_telemetry_ingest: duplicate X-Message-ID for device={device_id} message_id={message_id}")
+            return Response(
+                {"status": "duplicate", "site_id": site_id, "timestamp": timestamp_iso},
+                status=status.HTTP_200_OK,
+            )
+
     # ── Step 1: Write-ahead buffer (PostgreSQL) ───────────────────────────────
     # This is the source of truth. If AWS writes fail, this record is replayed.
     try:
-        raw = TelemetryRaw.objects.create(
-            device=device_obj,
-            site_id=site_id,
-            timestamp=datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00')),
-            payload=payload,
-        )
+        with transaction.atomic():
+            raw = TelemetryRaw.objects.create(
+                device=device_obj,
+                site_id=site_id,
+                timestamp=datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00')),
+                payload=payload,
+            )
+            if message_id:
+                TelemetryMessageId.objects.create(device=device_obj, message_id=message_id)
     except Exception as exc:
         logger.error(f"TelemetryRaw write failed device={device_id}: {exc}")
         return Response({"error": "Database write failure"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -1122,9 +1140,10 @@ def system_health(request: Any) -> Response:
 def telemetry_buffer_stats(request: Any) -> Response:
     """
     Telemetry buffer backlog stats for monitoring dashboard.
-    Surfaces TelemetryRaw dynamo_ok / s3_ok write-ahead flags.
+    Surfaces TelemetryRaw dynamo_ok / s3_ok write-ahead flags plus
+    ingestion latency (received_at - device timestamp) over the last 24 h.
     """
-    from django.db.models import Min
+    from django.db.models import Avg, ExpressionWrapper, DurationField, F, Max, Min
 
     total = TelemetryRaw.objects.count()
     pending_dynamo = TelemetryRaw.objects.filter(dynamo_ok=False).count()
@@ -1150,6 +1169,28 @@ def telemetry_buffer_stats(request: Any) -> Response:
     else:
         buffer_status = "critical"
 
+    # Ingestion latency: server receipt time minus device-reported measurement time.
+    # Computed over successfully forwarded records in the last 24 h to avoid
+    # skew from old replayed records. Negative values (device clock ahead of server)
+    # are clamped to 0.
+    latency = TelemetryRaw.objects.filter(
+        dynamo_ok=True,
+        s3_ok=True,
+        received_at__gte=timezone.now() - timedelta(hours=24),
+    ).aggregate(
+        avg_latency=Avg(
+            ExpressionWrapper(F('received_at') - F('timestamp'), output_field=DurationField())
+        ),
+        max_latency=Max(
+            ExpressionWrapper(F('received_at') - F('timestamp'), output_field=DurationField())
+        ),
+    )
+
+    def _latency_s(val) -> float | None:
+        if val is None:
+            return None
+        return round(max(val.total_seconds(), 0), 1)
+
     return Response({
         "total": total,
         "pending_dynamo": pending_dynamo,
@@ -1158,6 +1199,8 @@ def telemetry_buffer_stats(request: Any) -> Response:
         "success_rate": round(success_rate, 1),
         "oldest_pending_age_seconds": round(oldest_pending_age_seconds),
         "status": buffer_status,
+        "avg_ingestion_latency_s": _latency_s(latency["avg_latency"]),
+        "max_ingestion_latency_s": _latency_s(latency["max_latency"]),
     })
 
 
@@ -3587,4 +3630,71 @@ def cron_replay_telemetry(request) -> Response:
         'dynamo_fixed': dynamo_fixed,
         's3_fixed': s3_fixed,
         'errors': errors,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def cron_device_heartbeat_check(request) -> Response:
+    """
+    Vercel cron endpoint: alert when any device has not sent a heartbeat
+    within HEARTBEAT_TIMEOUT_MINUTES (default 30).
+
+    Notification is sent as a POST to ALERT_WEBHOOK_URL (Slack/Discord-compatible
+    incoming webhook). If the env var is not set the cron still runs and logs,
+    so the endpoint is safe to deploy before a webhook is configured.
+
+    Schedule: every 30 minutes — see vercel.json crons.
+    """
+    import urllib.request as _urllib_request
+    import json as _json
+
+    timeout_minutes = int(getattr(settings, 'HEARTBEAT_TIMEOUT_MINUTES', 30))
+    cutoff = timezone.now() - timedelta(minutes=timeout_minutes)
+
+    offline_devices = list(
+        Device.objects.filter(
+            Q(last_heartbeat__lt=cutoff) | Q(last_heartbeat__isnull=True)
+        ).values('device_serial', 'last_heartbeat', 'user')
+    )
+
+    if not offline_devices:
+        logger.info('cron_device_heartbeat_check: all devices online')
+        return Response({'status': 'ok', 'offline_count': 0})
+
+    # Format alert message
+    lines = [f"*[360Watts Alert] {len(offline_devices)} device(s) offline (>{timeout_minutes} min silence)*"]
+    for dev in offline_devices:
+        last_seen = dev['last_heartbeat']
+        age = (timezone.now() - last_seen).total_seconds() / 60 if last_seen else None
+        age_str = f"{int(age)}m ago" if age is not None else "never"
+        lines.append(f"• `{dev['device_serial']}` — last seen {age_str}" +
+                     (f" (user: {dev['user']})" if dev['user'] else ""))
+    message = "\n".join(lines)
+
+    logger.warning('cron_device_heartbeat_check: %s', message)
+
+    webhook_url = env_config('ALERT_WEBHOOK_URL', default='')
+    alert_sent = False
+    if webhook_url:
+        try:
+            payload = _json.dumps({"text": message}).encode()
+            req = _urllib_request.Request(
+                webhook_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib_request.urlopen(req, timeout=5) as resp:
+                alert_sent = resp.status == 200
+        except Exception as exc:
+            logger.error('cron_device_heartbeat_check: webhook failed: %s', exc)
+    else:
+        logger.warning('cron_device_heartbeat_check: ALERT_WEBHOOK_URL not set — alert logged only')
+
+    return Response({
+        'status': 'alert',
+        'offline_count': len(offline_devices),
+        'offline_devices': [d['device_serial'] for d in offline_devices],
+        'alert_sent': alert_sent,
     })

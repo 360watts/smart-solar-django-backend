@@ -186,6 +186,7 @@ class ProvisionSerializer(serializers.Serializer):
 
 
 class TelemetryIngestSerializer(serializers.Serializer):
+	"""Schema for telemetry ingest (deviceId, timestamp, dataType, value, ...). Optional message_version for payload versioning."""
 	deviceId = serializers.CharField()
 	timestamp = serializers.DateTimeField()
 	dataType = serializers.CharField()
@@ -194,11 +195,14 @@ class TelemetryIngestSerializer(serializers.Serializer):
 	slaveId = serializers.IntegerField(required=False)
 	registerLabel = serializers.CharField(required=False, allow_blank=True)
 	quality = serializers.CharField(required=False, allow_blank=True)
+	message_version = serializers.CharField(required=False, allow_blank=True, allow_null=True, help_text="Telemetry payload schema version (e.g. 1, 1.0, v2) for message versioning")
 
 	def create(self, validated_data):
 		device, _ = Device.objects.get_or_create(device_serial=validated_data["deviceId"])
 		# Use dataType as registerLabel if not provided
 		register_label = validated_data.get("registerLabel") or validated_data["dataType"]
+		# message_version is not stored on TelemetryData; it is part of payload for versioning only
+		validated_data.pop("message_version", None)
 		return TelemetryData.objects.create(
 			device=device,
 			timestamp=validated_data["timestamp"],

@@ -465,6 +465,10 @@ OTA_CHUNK_SIZE = int(config('OTA_CHUNK_SIZE', default=32768))
 ALERT_VOLTAGE_LOW_THRESHOLD = 10    # volts
 ALERT_TEMPERATURE_HIGH_THRESHOLD = 80  # °C
 
+# Device heartbeat monitoring (cron_device_heartbeat_check)
+# Override via HEARTBEAT_TIMEOUT_MINUTES env var in Vercel project settings
+HEARTBEAT_TIMEOUT_MINUTES = int(env_config('HEARTBEAT_TIMEOUT_MINUTES', default='30'))
+
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================

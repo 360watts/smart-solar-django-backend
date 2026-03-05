@@ -97,4 +97,5 @@ urlpatterns = [
 	# Vercel Cron Job endpoints (called by Vercel scheduler, protected by CRON_SECRET)
 	path("cron/purge-telemetry/", views.cron_purge_telemetry, name="cron_purge_telemetry"),
 	path("cron/replay-telemetry/", views.cron_replay_telemetry, name="cron_replay_telemetry"),
+	path("cron/device-heartbeat-check/", views.cron_device_heartbeat_check, name="cron_device_heartbeat_check"),
 ]

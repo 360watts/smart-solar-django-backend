@@ -285,3 +285,26 @@ class TelemetryRaw(models.Model):
 
     def __str__(self):
         return f"{self.device.device_serial} → {self.site_id} @ {self.timestamp} [dynamo={self.dynamo_ok} s3={self.s3_ok}]"
+
+
+class TelemetryMessageId(models.Model):
+    """
+    Idempotency keys for telemetry ingest: (device, message_id) from X-Message-ID header.
+    Prevents duplicate processing when the device retries the same request.
+    Purge old rows periodically (e.g. 7 days) via management command or cron.
+    """
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="telemetry_message_ids")
+    message_id = models.CharField(max_length=255)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["device", "message_id"], name="api_telemetrymessageid_device_message_id_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["first_seen_at"], name="api_telemetrymessageid_first_seen_at_idx"),
+        ]
+        ordering = ["-first_seen_at"]
+
+    def __str__(self):
+        return f"{self.device.device_serial}:{self.message_id}"

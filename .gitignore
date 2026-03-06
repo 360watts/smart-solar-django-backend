@@ -141,3 +141,4 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+ota/AmazonRootCA1.pem
